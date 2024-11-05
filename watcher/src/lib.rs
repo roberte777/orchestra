@@ -1,3 +1,5 @@
+pub mod field_selector;
+pub use field_selector::{FieldCondition, FieldSelector, FieldSelectorBuilder, Operator};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -13,80 +15,6 @@ pub enum EventType {
 pub struct Event<T> {
     pub event_type: EventType,
     pub resource: T,
-}
-
-#[derive(Debug)]
-enum Operator {
-    Equals,
-    NotEquals,
-}
-
-#[derive(Debug)]
-pub struct FieldCondition {
-    field_name: String,
-    operator: Operator,
-    value: String,
-}
-#[derive(Debug)]
-pub struct FieldSelector {
-    conditions: Vec<FieldCondition>,
-}
-
-impl FieldSelector {
-    pub fn new() -> Self {
-        Self {
-            conditions: Vec::new(),
-        }
-    }
-
-    pub fn eq(&mut self, field_name: &str, value: &str) {
-        self.conditions.push(FieldCondition {
-            field_name: field_name.to_string(),
-            operator: Operator::Equals,
-            value: value.to_string(),
-        });
-    }
-
-    pub fn ne(&mut self, field_name: &str, value: &str) {
-        self.conditions.push(FieldCondition {
-            field_name: field_name.to_string(),
-            operator: Operator::NotEquals,
-            value: value.to_string(),
-        });
-    }
-    pub fn from_string(field_selector: &str) -> Self {
-        let mut conditions = Self::new();
-        let selectors = field_selector.split(',');
-        for selector in selectors {
-            let (field_name, operator, value) = if let Some(pos) = selector.find("!=") {
-                (
-                    selector[..pos].to_string(),
-                    Operator::NotEquals,
-                    selector[pos + 2..].to_string(),
-                )
-            } else if let Some(pos) = selector.find('=') {
-                (
-                    selector[..pos].to_string(),
-                    Operator::Equals,
-                    selector[pos + 1..].to_string(),
-                )
-            } else {
-                continue; // Invalid selector, skip
-            };
-
-            match operator {
-                Operator::NotEquals => conditions.ne(&field_name, &value),
-                Operator::Equals => conditions.eq(&field_name, &value),
-            };
-        }
-        conditions
-    }
-}
-
-impl Default for FieldSelector {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 struct Subscriber<T> {
@@ -168,11 +96,13 @@ where
 }
 
 pub trait Watchable {
-    fn get_field_value(&self, field_name: &str) -> Option<&str>;
+    fn get_field_value(&self, field_name: &str) -> Option<String>;
 }
 
 #[cfg(test)]
 mod test {
+    use mpsc::error::TryRecvError;
+
     use super::*;
 
     #[derive(Clone)]
@@ -181,9 +111,9 @@ mod test {
     }
 
     impl Watchable for MockResource {
-        fn get_field_value(&self, field_name: &str) -> Option<&str> {
+        fn get_field_value(&self, field_name: &str) -> Option<String> {
             match field_name {
-                "foo" => Some(&self.foo),
+                "foo" => Some(self.foo.clone()),
                 _ => None,
             }
         }
@@ -193,8 +123,7 @@ mod test {
     async fn test_watcher() {
         let mut watcher = Watcher::<MockResource>::new();
 
-        let mut field_selector = FieldSelector::new();
-        field_selector.eq("foo", "bar");
+        let field_selector = FieldSelectorBuilder::new().eq("foo", "bar").build();
         let mut receiver = watcher.subscribe(field_selector);
 
         let resource1 = MockResource {
@@ -208,5 +137,61 @@ mod test {
 
         let event = receiver.try_recv().expect("Should be able to receive");
         assert_eq!(event.resource.foo, "bar");
+    }
+
+    struct NestedResource {
+        mock: MockResource,
+    }
+
+    impl Watchable for NestedResource {
+        fn get_field_value(&self, field_name: &str) -> Option<String> {
+            match field_name {
+                "mock.foo" => Some(self.mock.foo.clone()),
+                _ => None,
+            }
+        }
+    }
+    #[tokio::test]
+    async fn test_nested_watcher() {
+        let mut watcher = Watcher::<NestedResource>::new();
+
+        let field_selector = FieldSelectorBuilder::new().eq("mock.foo", "bar").build();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = NestedResource {
+            mock: MockResource {
+                foo: "bar".to_string(),
+            },
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv().expect("Should be able to receive");
+        assert_eq!(event.resource.mock.foo, "bar");
+    }
+
+    #[tokio::test]
+    async fn test_negative_nested_watcher() {
+        let mut watcher = Watcher::<NestedResource>::new();
+
+        let field_selector = FieldSelectorBuilder::new().eq("foo", "non match").build();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = NestedResource {
+            mock: MockResource {
+                foo: "bar".to_string(),
+            },
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv();
+        assert!(matches!(event, Err(TryRecvError::Empty)));
     }
 }

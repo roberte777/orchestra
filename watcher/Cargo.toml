@@ -5,4 +5,3 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.41.0", features = ["full"] }
-watch_derive = { path = "../watch_derive"}
