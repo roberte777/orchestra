@@ -52,9 +52,14 @@ where
     pub fn notify(&mut self, event: Event<T>) {
         let event = Arc::new(event);
         self.subscribers.retain(|subscriber| {
-            if Self::apply_field_conditions(&event.resource, &subscriber.field_conditions) {
+            if subscriber.sender.is_closed() {
+                // Remove the subscriber if the sender is closed
+                false
+            } else if Self::apply_field_conditions(&event.resource, &subscriber.field_conditions) {
+                // Try to send the event; remove the subscriber if send fails
                 subscriber.sender.send(event.clone()).is_ok()
             } else {
+                // Field conditions do not match; keep the subscriber
                 true
             }
         });
