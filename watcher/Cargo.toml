@@ -1,0 +1,8 @@
+[package]
+name = "watcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.41.0", features = ["full"] }
+watch_derive = { path = "../watch_derive"}
