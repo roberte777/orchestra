@@ -1,6 +1,9 @@
 pub mod field_selector;
 pub use field_selector::{FieldCondition, FieldSelector, FieldSelectorBuilder, Operator};
-use std::sync::Arc;
+use std::{
+    fmt::{Display, Formatter},
+    sync::Arc,
+};
 
 use tokio::sync::mpsc;
 
@@ -17,12 +20,26 @@ pub struct Event<T> {
     pub resource: T,
 }
 
+impl Display for EventType {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let event_type_str = match self {
+            EventType::Added => "added",
+            EventType::Modified => "modified",
+            EventType::Deleted => "deleted",
+        };
+        write!(f, "{}", event_type_str)
+    }
+}
+
 struct Subscriber<T> {
     field_conditions: Vec<FieldCondition>,
     sender: mpsc::UnboundedSender<Arc<Event<T>>>,
 }
 
-pub struct Watcher<T> {
+pub struct Watcher<T>
+where
+    T: Watchable,
+{
     subscribers: Vec<Subscriber<T>>,
 }
 
