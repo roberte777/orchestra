@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde::Serialize;
 use tokio::sync::Mutex;
+use watcher::Watchable;
 
 #[derive(Clone)]
 pub enum PrincipalState {
@@ -37,11 +38,49 @@ pub struct Note {
     pub desired_state: DesiredState,
 }
 
+impl Watchable for Note {
+    fn get_field_value(&self, field_name: &str) -> Option<String> {
+        match field_name {
+            "name" => Some(self.name.clone()),
+            "description" => Some(self.description.clone()),
+            "host" => Some(self.host.clone()),
+            "command" => Some(self.command.clone()),
+            "symphony" => Some(self.symphony.clone()),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Symphony {
     name: String,
     notes: Vec<String>,
     desired_state: DesiredState,
+}
+
+impl Symphony {
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Returns a list of note names that are associated with this symphony.
+    /// Use the repository to additionally search for the associated notes
+    pub fn notes(&self) -> Vec<String> {
+        self.notes.clone()
+    }
+
+    pub fn desired_state(&self) -> DesiredState {
+        self.desired_state.clone()
+    }
+}
+
+impl Watchable for Symphony {
+    fn get_field_value(&self, field_name: &str) -> Option<String> {
+        match field_name {
+            "name" => Some(self.name.clone()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -50,6 +89,33 @@ pub struct Principal {
     capabilities: Vec<String>,
     state: PrincipalState,
     last_updated: u64,
+}
+
+impl Principal {
+    pub fn host(&self) -> String {
+        self.host.clone()
+    }
+
+    pub fn capabilities(&self) -> Vec<String> {
+        self.capabilities.clone()
+    }
+
+    pub fn state(&self) -> PrincipalState {
+        self.state.clone()
+    }
+
+    pub fn last_updated(&self) -> u64 {
+        self.last_updated
+    }
+}
+
+impl Watchable for Principal {
+    fn get_field_value(&self, field_name: &str) -> Option<String> {
+        match field_name {
+            "host" => Some(self.host.clone()),
+            _ => None,
+        }
+    }
 }
 // Define an in-memory store struct with HashMaps to store each entity type
 #[derive(Default)]
