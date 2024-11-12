@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use watcher::Watchable;
 
@@ -10,7 +10,7 @@ pub enum PrincipalState {
     NotReady,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum NoteState {
     Pending,
     Running,
@@ -18,13 +18,13 @@ pub enum NoteState {
     Terminated,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum DesiredState {
     Run,
     Stop,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Note {
     pub name: String,
     pub description: String,

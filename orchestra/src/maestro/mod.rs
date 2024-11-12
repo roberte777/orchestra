@@ -100,3 +100,40 @@ impl Default for WatchManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use models::{DesiredState, NoteState};
+    use watcher::EventType;
+
+    use super::*;
+    #[tokio::test]
+    async fn test_notes_no_selector() {
+        let mut watch_manager = WatchManager::default();
+        let field_selector = FieldSelector::default();
+        let mut receiver = watch_manager.subscribe_note(field_selector);
+        let sample_note = Note {
+            name: "Sample note".to_string(),
+            description: "Sample desc".to_string(),
+            host: "host".to_string(),
+            command: "command".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            restart_policy: "never".to_string(),
+            symphony: "sample".to_string(),
+            state: NoteState::Pending,
+            desired_state: DesiredState::Run,
+        };
+
+        let sample_event = Event {
+            event_type: EventType::Added,
+            resource: sample_note,
+        };
+
+        watch_manager.notify_note(sample_event.clone());
+        let e = receiver.try_recv().expect("Should receive an event");
+        assert!(sample_event.event_type.to_string() == e.event_type.to_string());
+    }
+}

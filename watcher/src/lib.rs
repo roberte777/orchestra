@@ -216,4 +216,26 @@ mod test {
         let event = receiver.try_recv();
         assert!(matches!(event, Err(TryRecvError::Empty)));
     }
+
+    #[tokio::test]
+    async fn test_no_selector() {
+        let mut watcher = Watcher::<NestedResource>::new();
+
+        let field_selector = FieldSelector::default();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = NestedResource {
+            mock: MockResource {
+                foo: "bar".to_string(),
+            },
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv().expect("Should be able to receive");
+        assert_eq!(event.resource.mock.foo, "bar");
+    }
 }
