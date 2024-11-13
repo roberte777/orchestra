@@ -7,7 +7,7 @@ use axum::{
         sse::{Event, KeepAlive},
         IntoResponse, Response, Sse,
     },
-    routing::get,
+    routing::{get, patch},
     Json, Router,
 };
 
@@ -80,8 +80,42 @@ pub async fn get_note_by_name(
     }
 }
 
+pub async fn start_note(
+    State(app_state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> StatusCode {
+    match app_state
+        .note_repository
+        .lock()
+        .await
+        .start_note(&name)
+        .await
+    {
+        true => StatusCode::OK,
+        false => StatusCode::NOT_FOUND,
+    }
+}
+
+pub async fn stop_note(
+    State(app_state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> StatusCode {
+    match app_state
+        .note_repository
+        .lock()
+        .await
+        .stop_note(&name)
+        .await
+    {
+        true => StatusCode::OK,
+        false => StatusCode::NOT_FOUND,
+    }
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/notes", get(get_notes))
         .route("/notes/:name", get(get_notes))
+        .route("/notes/:name/start", patch(start_note))
+        .route("/notes/:name/stop", patch(stop_note))
 }
