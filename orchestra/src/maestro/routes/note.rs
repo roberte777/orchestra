@@ -21,6 +21,7 @@ use crate::maestro::{models::Note, AppState};
 #[derive(Deserialize)]
 pub struct GetNotesQueryParams {
     watch: Option<bool>,
+    field_selector: Option<String>,
 }
 
 pub async fn get_notes(
@@ -41,7 +42,8 @@ pub async fn get_notes(
         .data(serde_json::to_string(&notes).unwrap_or_else(|_| "[]".to_string()));
 
     // Watching for updates
-    let field_selector = FieldSelector::default(); // Customize if needed
+    let field_selector =
+        FieldSelector::from_query(&params.field_selector.unwrap_or("".to_string())); // Customize if needed
     let receiver = app_state
         .watch_manager
         .lock()
