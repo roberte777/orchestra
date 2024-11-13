@@ -43,6 +43,7 @@ pub fn maestro() -> Router {
             get(|_: State<Arc<AppState>>| async move { "Hello World!" }),
         )
         .nest("/api/v1/notes", routes::note::routes())
+        .nest("/api/v1/symphonies", routes::symphony::routes())
         .with_state(app_state)
 }
 
