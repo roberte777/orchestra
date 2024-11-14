@@ -6,19 +6,28 @@ use std::sync::Arc;
 
 use axum::{extract::State, routing::get, Router};
 use models::{Note, Principal, SharedStore, SharedStoreExt, Symphony};
-use repositories::note::{InMemoryNoteRepository, NoteRepository};
+use repositories::{
+    note::{InMemoryNoteRepository, NoteRepository},
+    symphony::{InMemorySymphonyRepository, SymphonyRepository},
+};
 use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
 use watcher::{Event, FieldSelector, Watcher};
 
 pub struct AppState {
     pub note_repository: Mutex<Box<dyn NoteRepository>>,
+    pub symphony_repository: Mutex<Box<dyn SymphonyRepository>>,
     pub watch_manager: Mutex<WatchManager>,
 }
 
 impl AppState {
-    pub fn new(note_repository: Box<dyn NoteRepository>, watch_manager: WatchManager) -> Self {
+    pub fn new(
+        note_repository: Box<dyn NoteRepository>,
+        symphony_repository: Box<dyn SymphonyRepository>,
+        watch_manager: WatchManager,
+    ) -> Self {
         Self {
             note_repository: Mutex::new(note_repository),
+            symphony_repository: Mutex::new(symphony_repository),
             watch_manager: Mutex::new(watch_manager),
         }
     }
@@ -34,9 +43,14 @@ pub async fn run_maestro() {
 }
 pub fn maestro() -> Router {
     let data_store = SharedStore::new_shared();
-    let note_repository = Box::new(InMemoryNoteRepository::new(data_store));
+    let note_repository = Box::new(InMemoryNoteRepository::new(data_store.clone()));
+    let symphony_repository = Box::new(InMemorySymphonyRepository::new(data_store.clone()));
     let watch_manager = WatchManager::default();
-    let app_state = Arc::new(AppState::new(note_repository, watch_manager));
+    let app_state = Arc::new(AppState::new(
+        note_repository,
+        symphony_repository,
+        watch_manager,
+    ));
     Router::new()
         .route(
             "/",
