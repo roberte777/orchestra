@@ -53,9 +53,9 @@ impl Watchable for Note {
 
 #[derive(Clone)]
 pub struct Symphony {
-    name: String,
-    notes: Vec<String>,
-    desired_state: DesiredState,
+    pub name: String,
+    pub notes: Vec<String>,
+    pub desired_state: DesiredState,
 }
 
 impl Symphony {
@@ -163,6 +163,10 @@ impl InMemoryStore {
 
     pub fn get_all_notes(&self) -> Vec<Note> {
         self.notes.iter().map(|n| n.1.clone()).collect()
+    }
+
+    pub fn get_all_symphonies(&self) -> Vec<Symphony> {
+        self.symphonies.iter().map(|n| n.1.clone()).collect()
     }
 
     // Methods to update data (example for notes)
