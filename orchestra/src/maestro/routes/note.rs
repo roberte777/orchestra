@@ -14,7 +14,7 @@ use axum::{
 use futures::{stream, StreamExt};
 use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use watcher::FieldSelector;
+use watcher::{EventType, FieldSelector};
 
 use crate::maestro::{models::Note, AppState};
 
@@ -86,14 +86,17 @@ pub async fn start_note(
     State(app_state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> StatusCode {
-    match app_state
-        .note_repository
-        .lock()
-        .await
-        .start_note(&name)
-        .await
-    {
-        true => StatusCode::OK,
+    let repository = app_state.note_repository.lock().await;
+    match repository.start_note(&name).await {
+        true => {
+            let note = repository.get_note(&name).await.unwrap();
+            let event = watcher::Event {
+                event_type: EventType::Modified,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+            StatusCode::OK
+        }
         false => StatusCode::NOT_FOUND,
     }
 }
@@ -102,14 +105,18 @@ pub async fn stop_note(
     State(app_state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> StatusCode {
-    match app_state
-        .note_repository
-        .lock()
-        .await
-        .stop_note(&name)
-        .await
-    {
-        true => StatusCode::OK,
+    let repository = app_state.note_repository.lock().await;
+    match repository.stop_note(&name).await {
+        true => {
+            let note = repository.get_note(&name).await.unwrap();
+            let event = watcher::Event {
+                event_type: EventType::Modified,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+
+            StatusCode::OK
+        }
         false => StatusCode::NOT_FOUND,
     }
 }
