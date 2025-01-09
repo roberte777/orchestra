@@ -8,6 +8,7 @@ pub trait SymphonyRepository: Send + Sync {
     async fn add_symphony(&self, symphony: Symphony);
     async fn stop_symphony(&self, name: &str) -> bool;
     async fn remove_symphony(&self, name: &str) -> bool;
+    async fn start_symphony(&self, name: &str) -> bool;
 }
 
 pub struct InMemorySymphonyRepository {
@@ -31,6 +32,16 @@ impl SymphonyRepository for InMemorySymphonyRepository {
 
     async fn add_symphony(&self, symphony: Symphony) {
         self.store.lock().await.add_symphony(symphony)
+    }
+
+    async fn start_symphony(&self, name: &str) -> bool {
+        let mut store = self.store.lock().await;
+        let Some(mut symphony) = store.get_symphony(name) else {
+            return false;
+        };
+
+        symphony.desired_state = DesiredState::Run;
+        store.update_symphony(symphony).is_ok()
     }
 
     async fn stop_symphony(&self, name: &str) -> bool {
