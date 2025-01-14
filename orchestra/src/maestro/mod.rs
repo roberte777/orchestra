@@ -64,7 +64,7 @@ pub fn maestro() -> Router {
         )
         .nest("/api/v1/notes", routes::notes::routes())
         .nest("/api/v1/symphonies", routes::symphonies::routes())
-        .nest("/api/v1/symphonies", routes::principals::routes())
+        .nest("/api/v1/principals", routes::principals::routes())
         .with_state(app_state)
 }
 
