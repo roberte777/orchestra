@@ -123,8 +123,8 @@ pub async fn stop_note(
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/notes", get(get_notes))
-        .route("/notes/:name", get(get_notes))
-        .route("/notes/:name/start", patch(start_note))
-        .route("/notes/:name/stop", patch(stop_note))
+        .route("/", get(get_notes))
+        .route("/{name}", get(get_note_by_name))
+        .route("/{name}/start", patch(start_note))
+        .route("/{name}/stop", patch(stop_note))
 }

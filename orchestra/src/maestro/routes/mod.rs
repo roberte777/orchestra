@@ -1,2 +1,3 @@
-pub mod note;
-pub mod symphony;
+pub mod notes;
+pub mod principals;
+pub mod symphonies;

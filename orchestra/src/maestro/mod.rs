@@ -8,6 +8,7 @@ use axum::{extract::State, routing::get, Router};
 use models::{Note, Principal, SharedStore, SharedStoreExt, Symphony};
 use repositories::{
     note::{InMemoryNoteRepository, NoteRepository},
+    principal::{InMemoryPrincipalRepository, PrincipalRepository},
     symphony::{InMemorySymphonyRepository, SymphonyRepository},
 };
 use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
@@ -16,6 +17,7 @@ use watcher::{Event, FieldSelector, Watcher};
 pub struct AppState {
     pub note_repository: Mutex<Box<dyn NoteRepository>>,
     pub symphony_repository: Mutex<Box<dyn SymphonyRepository>>,
+    pub principal_repository: Mutex<Box<dyn PrincipalRepository>>,
     pub watch_manager: Mutex<WatchManager>,
 }
 
@@ -23,11 +25,13 @@ impl AppState {
     pub fn new(
         note_repository: Box<dyn NoteRepository>,
         symphony_repository: Box<dyn SymphonyRepository>,
+        principal_repository: Box<dyn PrincipalRepository>,
         watch_manager: WatchManager,
     ) -> Self {
         Self {
             note_repository: Mutex::new(note_repository),
             symphony_repository: Mutex::new(symphony_repository),
+            principal_repository: Mutex::new(principal_repository),
             watch_manager: Mutex::new(watch_manager),
         }
     }
@@ -45,10 +49,12 @@ pub fn maestro() -> Router {
     let data_store = SharedStore::new_shared();
     let note_repository = Box::new(InMemoryNoteRepository::new(data_store.clone()));
     let symphony_repository = Box::new(InMemorySymphonyRepository::new(data_store.clone()));
+    let principal_repository = Box::new(InMemoryPrincipalRepository::new(data_store.clone()));
     let watch_manager = WatchManager::default();
     let app_state = Arc::new(AppState::new(
         note_repository,
         symphony_repository,
+        principal_repository,
         watch_manager,
     ));
     Router::new()
@@ -56,8 +62,9 @@ pub fn maestro() -> Router {
             "/",
             get(|_: State<Arc<AppState>>| async move { "Hello World!" }),
         )
-        .nest("/api/v1/notes", routes::note::routes())
-        .nest("/api/v1/symphonies", routes::symphony::routes())
+        .nest("/api/v1/notes", routes::notes::routes())
+        .nest("/api/v1/symphonies", routes::symphonies::routes())
+        .nest("/api/v1/symphonies", routes::principals::routes())
         .with_state(app_state)
 }
 

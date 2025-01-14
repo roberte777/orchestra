@@ -1,6 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
-use axum::{body::Body, extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Deserialize;
 
 use crate::maestro::{
@@ -12,8 +18,8 @@ use crate::maestro::{
 
 /// Create and start a Symphony
 pub async fn start_symphony(
+    State(app_state): State<Arc<AppState>>,
     Json(symphony_dto): Json<SymphonyDto>,
-    State(app_state): State<AppState>,
 ) {
     let symphony = symphony_dto.to_data_obj();
     let notes = symphony_dto
@@ -21,12 +27,14 @@ pub async fn start_symphony(
         .iter()
         .map(|n| n.to_data_obj(&symphony.name))
         .collect::<Vec<Note>>();
+    // Create and start symphony
     {
         let symphony_repo = app_state.symphony_repository.lock().await;
         let symphony_name = symphony.name();
         symphony_repo.add_symphony(symphony).await;
         symphony_repo.start_symphony(&symphony_name).await;
     }
+    // Create and start notes in the symphony
     {
         let notes_repo = app_state.note_repository.lock().await;
         for note in notes.clone() {
@@ -44,16 +52,36 @@ pub async fn start_symphony(
     }
 }
 
+// Stop a Symphony
+pub async fn stop_symphony(
+    Path(name): Path<String>,
+    State(app_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let symphony_repo = app_state.symphony_repository.lock().await;
+    let notes_repo = app_state.note_repository.lock().await;
+    let symphony = match symphony_repo.get_symphony(&name).await {
+        Some(symphony) => symphony,
+        None => return StatusCode::NOT_FOUND,
+    };
+    for note in symphony.notes() {
+        _ = notes_repo.stop_note(&note).await;
+    }
+
+    symphony_repo.stop_symphony(&name).await;
+
+    StatusCode::OK
+}
+
 /// Starts an existing symphony
 pub async fn start_symphony_by_id() {}
 
 pub async fn get_notes_for_symphony() {}
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/symphonies/:symphony_name/notes",
-        get(get_notes_for_symphony),
-    )
+    Router::new()
+        .route("/{symphony_name}/notes", get(get_notes_for_symphony))
+        .route("/", post(start_symphony))
+        .route("/{name}/stop", post(stop_symphony))
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -84,7 +112,7 @@ impl NoteDto {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
 pub struct SymphonyDto {
     pub name: String,
     pub notes: Vec<NoteDto>,

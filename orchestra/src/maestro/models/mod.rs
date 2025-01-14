@@ -85,10 +85,10 @@ impl Watchable for Symphony {
 
 #[derive(Clone)]
 pub struct Principal {
-    host: String,
-    capabilities: Vec<String>,
-    state: PrincipalState,
-    last_updated: u64,
+    pub host: String,
+    pub capabilities: Vec<String>,
+    pub state: PrincipalState,
+    pub last_updated: u64,
 }
 
 impl Principal {
@@ -167,6 +167,10 @@ impl InMemoryStore {
 
     pub fn get_all_symphonies(&self) -> Vec<Symphony> {
         self.symphonies.iter().map(|n| n.1.clone()).collect()
+    }
+
+    pub fn get_all_principals(&self) -> Vec<Principal> {
+        self.principals.iter().map(|n| n.1.clone()).collect()
     }
 
     // Methods to update data (example for notes)
