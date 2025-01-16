@@ -17,18 +17,18 @@ const symphonyData = {
         VAR1: "value1",
         VAR2: "value2",
       },
-      restart_policy: "never",
+      restart_policy: "Never",
     },
     {
       name: "Note2",
       description: "Second note",
       host: "me",
       command: "ping",
-      args: ["-c", "4", "127.0.0.1"],
+      args: ["127.0.0.1"],
       env: {
         VAR1: "value1",
       },
-      restart_policy: "on_failure",
+      restart_policy: "OnFailure",
     },
   ],
 };
