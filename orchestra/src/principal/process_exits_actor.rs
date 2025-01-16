@@ -80,12 +80,17 @@ impl ProcessExitsActor {
                         // If this process still exists in the map, handle exit logic
                         if let Some(proc_entry) = processes.get_mut(&proc_name) {
                             // If we didn't mark it as Killed earlier, then it is Exited
-                            if !matches!(proc_entry.note.state, NoteState::Terminated) {
-                                if exit_code == 0 {
-                                    proc_entry.note.state = NoteState::Completed;
-                                } else {
-                                    proc_entry.note.state = NoteState::Crashed;
-                                }
+                            if matches!(proc_entry.note.state, NoteState::Terminated) {
+                                info!(note = proc_entry.note.name, "process terminated");
+                                // if it's manually terminated, don't restart
+                                continue;
+                            }
+
+                            // Set correct status
+                            if exit_code == 0 {
+                                proc_entry.note.state = NoteState::Completed;
+                            } else {
+                                proc_entry.note.state = NoteState::Crashed;
                             }
 
                             // Drop the old child (so we can start a fresh one if needed)
@@ -137,23 +142,6 @@ impl ProcessExitsActor {
                     }
                 }
             }
-
-            // Once we exit the loop, we want to ensure no processes remain running.
-            // (If that is your desired behavior)
-            // {
-            //     let mut processes = state.notes.lock().await;
-            //     for (name, managed_proc) in processes.iter_mut() {
-            //         // If there's a running child, kill it
-            //         if let Some(child) = &managed_proc.child {
-            //             info!("Killing remaining process '{name}'.");
-            //             let _ = child.kill();
-            //             _ = child.wait();
-            //         }
-            //         // Mark them as Terminated
-            //         managed_proc.note.state = NoteState::Terminated;
-            //         managed_proc.child = None;
-            //     }
-            // }
 
             info!("Exiting 'handle_process_exits' thread");
         });

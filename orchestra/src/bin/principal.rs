@@ -106,10 +106,12 @@ async fn main() -> Result<()> {
     // Proceed with your shutdown logic.
 
     println!("Disconnecting from SSE endpoint.");
+    println!("Stopping heartbeats");
     hb_actor.stop().await;
 
     // Stop the process-exits actor last, or after you kill any processes
     // you *haven't* already killed.
+    println!("Stopping process exits actor");
     process_exits_actor.stop().await;
 
     println!("Clean shutdown complete.");
