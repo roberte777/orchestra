@@ -4,7 +4,7 @@ use std::{
 };
 
 use axum::{extract::State, routing::post, Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::maestro::{
     models::{NoteState, Principal, PrincipalState},
@@ -45,14 +45,14 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/", post(principal_heartbeat))
 }
 
-#[derive(Deserialize)]
-struct HeartbeatDto {
-    name: String,
-    notes: Vec<HeartbeatNoteDto>,
+#[derive(Deserialize, Serialize)]
+pub struct HeartbeatDto {
+    pub name: String,
+    pub notes: Vec<HeartbeatNoteDto>,
 }
 
-#[derive(Deserialize)]
-struct HeartbeatNoteDto {
-    name: String,
-    state: NoteState,
+#[derive(Deserialize, Serialize)]
+pub struct HeartbeatNoteDto {
+    pub name: String,
+    pub state: NoteState,
 }

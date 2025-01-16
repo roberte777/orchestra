@@ -10,7 +10,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::maestro::{
-    models::{DesiredState, Note, NoteState, Symphony},
+    models::{DesiredState, Note, NoteState, RestartPolicy, Symphony},
     AppState,
 };
 
@@ -92,7 +92,7 @@ pub struct NoteDto {
     pub command: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
-    pub restart_policy: String,
+    pub restart_policy: RestartPolicy,
 }
 
 impl NoteDto {

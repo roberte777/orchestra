@@ -14,7 +14,11 @@ pub enum PrincipalState {
 pub enum NoteState {
     Pending,
     Running,
+    // if the process exits by iteslf with a zero exit code
     Completed,
+    //if a process exits by itself with a non-zero exit code
+    Crashed,
+    // if a user terminates a process
     Terminated,
 }
 
@@ -25,6 +29,13 @@ pub enum DesiredState {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum RestartPolicy {
+    Never,
+    OnFailure,
+    Always,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Note {
     pub name: String,
     pub description: String,
@@ -32,7 +43,7 @@ pub struct Note {
     pub command: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
-    pub restart_policy: String,
+    pub restart_policy: RestartPolicy,
     pub symphony: String,
     pub state: NoteState,
     pub desired_state: DesiredState,

@@ -1,9 +1,12 @@
 use axum::{routing::get, Router};
 use core::panic;
 use orchestra::maestro::{
-    models::{DesiredState, Note, NoteState, SharedStore, SharedStoreExt},
-    repositories::{note::InMemoryNoteRepository, symphony::InMemorySymphonyRepository},
-    routes::note::get_notes,
+    models::{DesiredState, Note, NoteState, RestartPolicy, SharedStore, SharedStoreExt},
+    repositories::{
+        note::InMemoryNoteRepository, principal::InMemoryPrincipalRepository,
+        symphony::InMemorySymphonyRepository,
+    },
+    routes::notes::get_notes,
     AppState, WatchManager,
 };
 use reqwest::StatusCode;
@@ -19,10 +22,12 @@ async fn test_get_notes() {
     let shared_store = SharedStore::new_shared();
     let note_repository = Box::new(InMemoryNoteRepository::new(shared_store.clone()));
     let symphony_repository = Box::new(InMemorySymphonyRepository::new(shared_store.clone()));
+    let principal_repository = Box::new(InMemoryPrincipalRepository::new(shared_store.clone()));
     let watch_manager = WatchManager::default();
     let app_state = Arc::new(AppState::new(
         note_repository,
         symphony_repository,
+        principal_repository,
         watch_manager,
     ));
 
@@ -64,7 +69,7 @@ async fn test_get_notes() {
         command: "command".to_string(),
         args: Vec::new(),
         env: HashMap::new(),
-        restart_policy: "never".to_string(),
+        restart_policy: RestartPolicy::Never,
         symphony: "sample".to_string(),
         state: NoteState::Pending,
         desired_state: DesiredState::Run,
