@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use watcher::Watchable;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum PrincipalState {
     Ready,
     NotReady,
@@ -94,7 +94,7 @@ impl Watchable for Symphony {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Principal {
     pub host: String,
     pub capabilities: Vec<String>,

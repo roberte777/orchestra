@@ -3,8 +3,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    debug_handler,
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use crate::maestro::{
     models::{NoteState, Principal, PrincipalState},
@@ -15,6 +21,7 @@ async fn principal_heartbeat(
     State(app_state): State<Arc<AppState>>,
     Json(heartbeat): Json<HeartbeatDto>,
 ) {
+    info!("got heartbeat: {:?}", heartbeat);
     let principal_repo = app_state.principal_repository.lock().await;
     let note_repo = app_state.note_repository.lock().await;
 
@@ -41,17 +48,25 @@ async fn principal_heartbeat(
     principal_repo.upsert_principal(principal).await;
 }
 
-pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/", post(principal_heartbeat))
+async fn get_principals(State(app_state): State<Arc<AppState>>) -> Json<Vec<Principal>> {
+    let principal_repo = app_state.principal_repository.lock().await;
+    let principals = principal_repo.get_all_principals().await;
+    Json(principals)
 }
 
-#[derive(Deserialize, Serialize)]
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", post(principal_heartbeat))
+        .route("/", get(get_principals))
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct HeartbeatDto {
     pub name: String,
     pub notes: Vec<HeartbeatNoteDto>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct HeartbeatNoteDto {
     pub name: String,
     pub state: NoteState,

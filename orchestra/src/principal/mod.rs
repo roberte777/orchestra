@@ -11,7 +11,7 @@ use tokio::{
     time::{self},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::maestro::routes::principals::{HeartbeatDto, HeartbeatNoteDto};
 
@@ -93,10 +93,12 @@ async fn heartbeat_task(
         name: "me".to_string(),
         notes,
     };
-    let _response = client
+    let response = client
         .post(url)
-        .body(serde_json::to_string(&heartbeat).unwrap())
+        .json(&heartbeat)
+        // .header("Content-Type", "application/json")
         .send()
         .await?;
+    debug!("Heartbeat response: {:?}", response);
     Ok(())
 }
