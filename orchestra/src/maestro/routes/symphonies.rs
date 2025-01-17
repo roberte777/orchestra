@@ -1,13 +1,14 @@
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
+    debug_handler,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::maestro::{
     models::{DesiredState, Note, NoteState, RestartPolicy, Symphony},
@@ -76,11 +77,38 @@ pub async fn stop_symphony(
 pub async fn start_symphony_by_id() {}
 
 pub async fn get_notes_for_symphony() {}
+#[debug_handler]
+async fn get_all_symphonies(State(state): State<Arc<AppState>>) -> Json<Vec<SymphonyReturn>> {
+    let s_repo = state.symphony_repository.lock().await;
+    let n_repo = state.note_repository.lock().await;
+    let symphonies = s_repo.get_all_symphonies().await;
+    let mut final_symphonies = Vec::new();
+    for symphony in symphonies {
+        let mut notes = Vec::new();
+        for note in symphony.notes {
+            let note = n_repo.get_note(&note).await.unwrap();
+            notes.push(note);
+        }
+
+        final_symphonies.push(SymphonyReturn {
+            name: symphony.name,
+            notes,
+        });
+    }
+    Json(final_symphonies)
+}
+
+#[derive(Serialize)]
+struct SymphonyReturn {
+    name: String,
+    notes: Vec<Note>,
+}
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/{symphony_name}/notes", get(get_notes_for_symphony))
         .route("/", post(start_symphony))
+        .route("/", get(get_all_symphonies))
         .route("/{name}/stop", post(stop_symphony))
 }
 

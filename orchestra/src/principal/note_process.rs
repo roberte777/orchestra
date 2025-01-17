@@ -104,7 +104,11 @@ pub async fn stop_note(notes: &mut HashMap<String, ManagedNote>, name: &str) {
     }
 }
 
-pub async fn synchronize_state(state: &mut AppState, override_notes: Vec<Note>) {
+pub async fn synchronize_state(
+    state: &mut AppState,
+    override_notes: Vec<Note>,
+    exit_tx: UnboundedSender<(String, i32)>,
+) {
     let mut notes = state.notes.lock().await;
 
     // Create a set of names from the override list for quick lookups
@@ -150,11 +154,14 @@ pub async fn synchronize_state(state: &mut AppState, override_notes: Vec<Note>) 
             None => {
                 // Add the new note
                 info!("Adding new note '{}'.", override_note.name);
-                let managed_note = ManagedNote {
-                    note: override_note.clone(),
-                    child: None,
-                };
-                notes.insert(override_note.name.clone(), managed_note);
+                if matches!(override_note.desired_state, DesiredState::Run) {
+                    start_note(&mut notes, override_note, exit_tx.clone()).await;
+                }
+                // let managed_note = ManagedNote {
+                //     note: override_note.clone(),
+                //     child: None,
+                // };
+                // notes.insert(override_note.name.clone(), managed_note);
             }
         }
     }

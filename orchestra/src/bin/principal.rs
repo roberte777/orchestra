@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
                             // data is a list of notes
                             let notes: Vec<Note> = serde_json::from_str(&message.data)
                                 .expect("Should have received valid list of notes");
-                            synchronize_state(&mut state, notes).await;
+                            synchronize_state(&mut state, notes, process_exit_tx.clone()).await;
                         }
                         "added" => {
                             debug!("Got list event");
