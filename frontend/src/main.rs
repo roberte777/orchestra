@@ -1,20 +1,40 @@
 use axum::{
     body::Body,
-    extract::Path,
+    extract::{Path, State},
     http::{header, Response, StatusCode},
     response::IntoResponse,
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
 use include_dir::{include_dir, Dir};
-use std::net::{IpAddr, SocketAddr};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    net::{IpAddr, SocketAddr},
+};
 
 #[cfg(feature = "frontend")]
 static FRONTEND_DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
 
-pub async fn run_server(host: Option<String>, port: Option<u16>) {
+#[derive(Clone)]
+struct AppState {
+    maestro_url: String,
+    client: Client,
+}
+
+pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<u16>) {
+    let client = Client::new();
+    let app_state = AppState {
+        maestro_url,
+        client,
+    };
     // build our application with a route
-    let mut app = Router::new();
+    let mut app = Router::new()
+        .route("/api/v1/symphonies", get(get_symphonies))
+        .route("/api/v1/symphonies", post(start_symphony))
+        .with_state(app_state);
 
     #[cfg(feature = "frontend")]
     {
@@ -38,6 +58,8 @@ pub async fn run_server(host: Option<String>, port: Option<u16>) {
         .expect("Failed to bind to port");
     axum::serve(listener, app).await.unwrap();
 }
+
+#[cfg(feature = "frontend")]
 async fn serve_embedded(Path(req_path): Path<String>) -> impl IntoResponse {
     // If path is empty, serve "index.html"
     let req_path = if req_path.trim().is_empty() {
@@ -77,9 +99,72 @@ async fn serve_embedded(Path(req_path): Path<String>) -> impl IntoResponse {
         }
     }
 }
+
+async fn get_symphonies(State(app_state): State<AppState>) -> impl IntoResponse {
+    println!("got request");
+    let response = reqwest::get(format!("{}/api/v1/symphonies", app_state.maestro_url)).await;
+    match response {
+        Ok(resp) => {
+            println!("{:?}", resp);
+            // println!("{:?}", resp.text().await.unwrap());
+            // (StatusCode::OK, resp.json::<String>().await.unwrap())
+            (StatusCode::OK, resp.text().await.unwrap())
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to make request to maestro server".to_string(),
+        ),
+    }
+}
+
+/// Create and start a Symphony
+pub async fn start_symphony(
+    State(app_state): State<AppState>,
+    Json(symphony_dto): Json<SymphonyDto>,
+) -> impl IntoResponse {
+    let resp = app_state
+        .client
+        .post(format!("{}/api/v1/symphonies", app_state.maestro_url))
+        .json(&symphony_dto)
+        .send()
+        .await;
+    match resp {
+        Ok(resp) => (resp.status(), resp.text().await.unwrap()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to make request to maestro server".to_string(),
+        ),
+    }
+}
+
+#[derive(Clone, Deserialize, Debug, Serialize)]
+pub struct NoteDto {
+    pub name: String,
+    pub description: String,
+    pub host: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub restart_policy: RestartPolicy,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct SymphonyDto {
+    pub name: String,
+    pub notes: Vec<NoteDto>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum RestartPolicy {
+    Never,
+    OnFailure,
+    Always,
+}
+
 #[tokio::main]
 async fn main() {
-    let host = "localhost".to_string();
+    let host = "127.0.0.1".to_string();
     let port = 8888;
-    run_server(Some(host), Some(port)).await;
+    let maestro_url = "http://localhost:3000".to_string();
+    run_server(maestro_url, Some(host), Some(port)).await;
 }

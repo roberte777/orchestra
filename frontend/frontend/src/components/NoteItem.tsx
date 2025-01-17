@@ -1,14 +1,12 @@
-import { useState } from "react";
 import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
 export function NoteItem({ note, symphonyId }) {
-  const [isRunning, setIsRunning] = useState(note.state === "RUNNING");
+  const isRunning = note.state == "Running";
 
   const toggleNote = () => {
     // This would typically be an API call
-    setIsRunning(!isRunning);
   };
 
   return (

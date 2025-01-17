@@ -1,15 +1,21 @@
-import { useState } from "react";
 import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { NoteItem } from "./NoteItem";
 
 export function SymphonyItem({ symphony }) {
-  const [isRunning, setIsRunning] = useState(symphony.state === "RUNNING");
+  const isRunning = symphony.state === "Running";
 
-  const toggleSymphony = () => {
+  const toggleSymphony = async () => {
     // This would typically be an API call
-    setIsRunning(!isRunning);
+    const resp = await fetch("/api/v1/symphonies", {
+      method: "POST",
+      body: JSON.stringify(symphony),
+      headers: {
+        "Content-Type": "Application/json",
+      },
+    });
+    console.log(resp);
   };
 
   return (
