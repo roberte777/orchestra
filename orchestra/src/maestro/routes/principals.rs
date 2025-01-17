@@ -4,13 +4,13 @@ use std::{
 };
 
 use axum::{
-    debug_handler,
     extract::State,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
+use watcher::EventType;
 
 use crate::maestro::{
     models::{NoteState, Principal, PrincipalState},
@@ -26,6 +26,16 @@ async fn principal_heartbeat(
     let note_repo = app_state.note_repository.lock().await;
 
     for note in heartbeat.notes {
+        // remove terminated notes from state
+        if matches!(note.state, NoteState::Terminated) {
+            let note = note_repo.get_note(&note.name).await.unwrap();
+            note_repo.remove_note(&note.name).await;
+            let event = watcher::Event {
+                event_type: EventType::Deleted,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+        }
         let mut note_update = note_repo
             .get_note(&note.name)
             .await

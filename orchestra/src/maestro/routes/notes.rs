@@ -16,7 +16,10 @@ use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use watcher::{EventType, FieldSelector};
 
-use crate::maestro::{models::Note, AppState};
+use crate::maestro::{
+    models::{DesiredState, Note},
+    AppState,
+};
 
 #[derive(Deserialize)]
 pub struct GetNotesQueryParams {
@@ -87,6 +90,19 @@ pub async fn start_note(
     Path(name): Path<String>,
 ) -> StatusCode {
     let repository = app_state.note_repository.lock().await;
+    // we can only restart a note if its desired state is run (i.e. it has not
+    // been terminated by a user yet.)
+
+    let existing_note = match repository.get_note(&name).await {
+        Some(note) => note,
+        None => return StatusCode::NOT_FOUND,
+    };
+
+    // can't start a stopped process
+    if matches!(existing_note.desired_state, DesiredState::Stop) {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
     match repository.start_note(&name).await {
         true => {
             let note = repository.get_note(&name).await.unwrap();

@@ -89,10 +89,10 @@ pub async fn start_note(
 pub async fn stop_note(notes: &mut HashMap<String, ManagedNote>, name: &str) {
     match notes.get_mut(name) {
         Some(managed_proc) => {
+            managed_proc.note.state = NoteState::Terminated;
             if let Some(child) = &managed_proc.child {
                 debug!("Killing process: {}", name);
                 // Mark it as Killed by command
-                managed_proc.note.state = NoteState::Terminated;
                 let _ = child.kill();
             } else {
                 warn!("Process {} has no active child to kill.", name);

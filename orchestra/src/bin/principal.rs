@@ -65,8 +65,10 @@ async fn main() -> Result<()> {
                                     && !matches!(managed_note.note.state, NoteState::Running)
                                 {
                                     start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
-                                } else if matches!(new_note.desired_state, DesiredState::Stop)
-                                    && matches!(managed_note.note.state, NoteState::Running)
+                                }
+                                // if the desired state is stop, stop process
+                                // if running and set state to terminated
+                                else if matches!(new_note.desired_state, DesiredState::Stop)
                                 {
                                     stop_note(&mut current_notes, &new_note.name).await;
                                 }
