@@ -34,6 +34,7 @@ pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<
     let mut app = Router::new()
         .route("/api/v1/symphonies", get(get_symphonies))
         .route("/api/v1/symphonies", post(start_symphony))
+        .route("/api/v1/symphonies/{name}/stop", post(stop_symphony))
         .with_state(app_state);
 
     #[cfg(feature = "frontend")]
@@ -126,6 +127,27 @@ pub async fn start_symphony(
         .client
         .post(format!("{}/api/v1/symphonies", app_state.maestro_url))
         .json(&symphony_dto)
+        .send()
+        .await;
+    match resp {
+        Ok(resp) => (resp.status(), resp.text().await.unwrap()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to make request to maestro server".to_string(),
+        ),
+    }
+}
+
+pub async fn stop_symphony(
+    Path(name): Path<String>,
+    State(app_state): State<AppState>,
+) -> impl IntoResponse {
+    let resp = app_state
+        .client
+        .post(format!(
+            "{}/api/v1/symphonies/{}/stop",
+            app_state.maestro_url, name
+        ))
         .send()
         .await;
     match resp {

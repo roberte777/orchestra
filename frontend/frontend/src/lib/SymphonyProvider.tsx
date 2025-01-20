@@ -101,7 +101,7 @@ const initialSymphonies: Symphony[] = [
         restart_policy: "OnFailure",
         symphony: "MyHardcodedSymphony",
         state: "Running",
-        desired_state: "Running",
+        desired_state: "Stop",
       },
     ],
   },
@@ -139,14 +139,32 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
             );
             if (match) {
               localSym.state = "Running";
-              // Merge or replace fields. This example replaces local fields with server fields
-              // but keep anything not in server data. Adjust as needed.
+              localSym.notes = localSym.notes.map((note) => {
+                const noteMatch = match.notes.find(
+                  (serverNote) => serverNote.name === note.name,
+                );
+                if (noteMatch) {
+                  console.log("notes match: ", noteMatch);
+                  return {
+                    ...noteMatch,
+                  };
+                } else {
+                  console.log("no notes match");
+                  return {
+                    ...note,
+                    state: "Terminated",
+                  };
+                }
+              });
               return {
                 ...localSym,
-                ...match,
               };
             } else {
               localSym.state = "Stopped";
+              localSym.notes = localSym.notes.map((note) => {
+                note.state = "Terminated";
+                return note;
+              });
               return {
                 ...localSym,
               };

@@ -9,11 +9,12 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{debug, info};
 use watcher::EventType;
 
 use crate::maestro::{
-    models::{NoteState, Principal, PrincipalState},
+    models::{DesiredState, NoteState, Principal, PrincipalState},
+    repositories::symphony,
     AppState,
 };
 
@@ -24,25 +25,45 @@ async fn principal_heartbeat(
     info!("got heartbeat: {:?}", heartbeat);
     let principal_repo = app_state.principal_repository.lock().await;
     let note_repo = app_state.note_repository.lock().await;
+    let symphony_repo = app_state.symphony_repository.lock().await;
 
     for note in heartbeat.notes {
         // remove terminated notes from state
         if matches!(note.state, NoteState::Terminated) {
-            let note = note_repo.get_note(&note.name).await.unwrap();
+            // collect data
+            let note = match note_repo.get_note(&note.name).await {
+                Some(note) => note,
+                None => continue,
+            };
+            let symphony_name = note.symphony.clone();
+            let mut symphony = symphony_repo.get_symphony(&symphony_name).await.unwrap();
+
+            // update symphony
+            symphony.notes.retain(|n| *n != note.name);
+            let should_remove = matches!(symphony.desired_state(), DesiredState::Stop)
+                && symphony.notes().is_empty();
+            _ = symphony_repo.update_symphony(symphony).await;
+            //update note
             note_repo.remove_note(&note.name).await;
             let event = watcher::Event {
                 event_type: EventType::Deleted,
                 resource: note,
             };
             app_state.watch_manager.lock().await.notify_note(event);
-        }
-        let mut note_update = note_repo
-            .get_note(&note.name)
-            .await
-            .expect("Should get valid note from principal heartbeat");
 
-        note_update.state = note.state;
-        note_repo.update_note(note_update).await;
+            // remove symphony if stop requested and all notes gone
+            if should_remove {
+                symphony_repo.remove_symphony(&symphony_name).await;
+            }
+        } else {
+            let mut note_update = note_repo
+                .get_note(&note.name)
+                .await
+                .expect("Should get valid note from principal heartbeat");
+
+            note_update.state = note.state;
+            note_repo.update_note(note_update).await;
+        }
     }
 
     let principal = Principal {

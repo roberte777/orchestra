@@ -62,7 +62,7 @@ impl Watchable for Note {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Symphony {
     pub name: String,
     pub notes: Vec<String>,

@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use watcher::{Event, EventType};
 
 use crate::maestro::{
     models::{DesiredState, Note, NoteState, RestartPolicy, Symphony},
@@ -62,10 +63,20 @@ pub async fn stop_symphony(
     let notes_repo = app_state.note_repository.lock().await;
     let symphony = match symphony_repo.get_symphony(&name).await {
         Some(symphony) => symphony,
-        None => return StatusCode::NOT_FOUND,
+        None => return StatusCode::INTERNAL_SERVER_ERROR,
     };
     for note in symphony.notes() {
-        _ = notes_repo.stop_note(&note).await;
+        let success = notes_repo.stop_note(&note).await;
+        if success {
+            let note = notes_repo.get_note(&note).await.unwrap();
+            let event = Event {
+                event_type: EventType::Modified,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+        } else {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
     }
 
     symphony_repo.stop_symphony(&name).await;
