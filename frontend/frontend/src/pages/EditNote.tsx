@@ -1,26 +1,28 @@
 import { useParams, useNavigate } from "react-router";
 import { NoteForm } from "../components/NoteForm";
+import { useSymphonies } from "@/lib/SymphonyProvider";
 
 export default function EditNote() {
-  const navigate = useNavigate();
+  // const navigate = useNavigate();
   const { symphonyId, noteId } = useParams();
-
-  // This would typically be fetched from an API
-  const note = {
-    id: noteId,
-    name: `Note ${noteId}`,
-    description: "Sample description",
-    host: "localhost",
-    command: "echo",
-    args: ["Hello", "World"],
-    env: { KEY: "VALUE" },
-    restart_policy: "always",
-  };
+  const { trackedSymphonies, updateSymphony } = useSymphonies();
+  const note = trackedSymphonies
+    .find((s) => s.name === symphonyId)
+    .notes.find((n) => n.name === noteId);
 
   const handleSubmit = async (data) => {
-    // This would typically be an API call to update the note
-    console.log("Updating note:", { symphonyId, noteId, ...data });
-    navigate(`/edit-symphony/${symphonyId}`);
+    const existingSymphony = trackedSymphonies.find(
+      (s) => s.name === symphonyId,
+    );
+    existingSymphony.notes = existingSymphony.notes.map((n) => {
+      if (n.name === noteId) {
+        return { ...n, ...data };
+      } else {
+        return { ...n };
+      }
+    });
+    console.log(existingSymphony);
+    updateSymphony(existingSymphony);
   };
 
   return (

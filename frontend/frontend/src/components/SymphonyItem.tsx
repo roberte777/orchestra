@@ -52,7 +52,7 @@ export function SymphonyItem({ symphony }) {
       <CardContent>
         <div className="space-y-2">
           {symphony.notes.map((note) => (
-            <NoteItem key={note.id} note={note} symphonyId={symphony.id} />
+            <NoteItem key={note.name} note={note} symphonyId={symphony.name} />
           ))}
         </div>
       </CardContent>

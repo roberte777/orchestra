@@ -24,7 +24,7 @@ export function NoteItem({ note, symphonyId }) {
             >
               {isRunning ? "Stop" : "Start"}
             </Button>
-            <Link to={`/edit-note/${symphonyId}/${note.id}`}>
+            <Link to={`/edit-note/${symphonyId}/${note.name}`}>
               <Button variant="outline" size="sm">
                 Edit
               </Button>

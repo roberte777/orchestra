@@ -34,6 +34,7 @@ interface SymphoniesContextValue {
   trackedSymphonies: Symphony[];
   addSymphony: (newSymphony: Symphony) => void;
   removeSymphony: (name: string) => void;
+  updateSymphony: (updatedSymphony: Symphony) => void;
 }
 
 // Create the context
@@ -73,6 +74,20 @@ const initialSymphonies: Symphony[] = [
       },
       {
         name: "Note2",
+        description: "Second note",
+        host: "me",
+        command: "ping",
+        args: ["127.0.0.1"],
+        env: {
+          VAR1: "value1",
+        },
+        restart_policy: "OnFailure",
+        symphony: "Symphony1",
+        state: "Pending",
+        desired_state: "Stop",
+      },
+      {
+        name: "Note3",
         description: "Second note",
         host: "me",
         command: "ping",
@@ -203,11 +218,25 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
     setTrackedSymphonies((prev) => prev.filter((sym) => sym.name !== name));
   };
 
+  const updateSymphony = (updatedSymphony: Symphony) => {
+    setTrackedSymphonies((prev) => {
+      const newList = prev.map((s) => {
+        if (s.name === updatedSymphony.name) {
+          return { ...updatedSymphony };
+        }
+        return s;
+      });
+      console.log("new list: ", newList);
+      return [...newList];
+    });
+  };
+
   // The value we provide to our consumers
   const value: SymphoniesContextValue = {
     trackedSymphonies,
     addSymphony,
     removeSymphony,
+    updateSymphony,
   };
 
   return (
