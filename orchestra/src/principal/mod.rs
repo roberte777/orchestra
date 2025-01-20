@@ -50,8 +50,10 @@ impl HeartbeatActor {
             let client = Client::new();
             loop {
                 //TODO: Take some sort of action if heartbeat fails.
-                let notes = state.notes.lock().await;
-                let _ = heartbeat_task(&url, &client, &notes).await;
+                {
+                    let notes = state.notes.lock().await;
+                    let _ = heartbeat_task(&url, &client, &notes).await;
+                }
                 tokio::select! {
                     _ = interval.tick() => {
                         // continue to next iteration

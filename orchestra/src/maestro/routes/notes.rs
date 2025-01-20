@@ -14,6 +14,7 @@ use axum::{
 use futures::{stream, StreamExt};
 use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::debug;
 use watcher::{EventType, FieldSelector};
 
 use crate::maestro::{
@@ -55,6 +56,7 @@ pub async fn get_notes(
 
     // Stream of update events
     let update_stream = UnboundedReceiverStream::new(receiver).map(|event| {
+        debug!("Got new event!");
         let note_event = event.as_ref().clone();
         serde_json::to_string(&note_event.resource).map(|data| {
             Event::default()

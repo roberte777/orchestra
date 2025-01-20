@@ -10,6 +10,7 @@ use orchestra::{
 use reqwest_eventsource::EventSource;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 #[tokio::main]
@@ -24,85 +25,90 @@ async fn main() -> Result<()> {
 
     let mut hb_actor = HeartbeatActor::new("http://localhost:3000/api/v1/principals".to_string());
     hb_actor.start(state.clone());
+    let ct = CancellationToken::new();
+    let ct_child = ct.child_token();
 
     // Replace with your target host
     let host = "http://localhost:3000";
     let sse_url = format!("{}/api/v1/notes?watch=true&field_selector=host=me", host);
+    tokio::spawn(async move {
+        println!("Subscribing to SSE from: {}", sse_url);
 
-    println!("Subscribing to SSE from: {}", sse_url);
+        let mut es = EventSource::get(sse_url);
 
-    let mut es = EventSource::get(sse_url);
-
-    // We'll wrap our SSE loop in a `tokio::select!` to allow early exit on Ctrl-C.
-    tokio::select! {
-        // SSE subscription loop
-        _ = async {
-            while let Some(item) = es.next().await {
-                match item {
-                    Ok(reqwest_eventsource::Event::Open) => info!("Connection Opened!"),
-                    Ok(reqwest_eventsource::Event::Message(message)) => match message.event.as_str() {
-                        "list" => {
-                            debug!(notes = message.data, "Got list event");
-                            // data is a list of notes
-                            let notes: Vec<Note> = serde_json::from_str(&message.data)
-                                .expect("Should have received valid list of notes");
-                            synchronize_state(&mut state, notes, process_exit_tx.clone()).await;
-                        }
-                        "added" => {
-                            debug!("Got list event");
-                            let new_note = serde_json::from_str(&message.data)
-                                .expect("Should receive valid note from added event");
-                            let mut current_notes = state.notes.lock().await;
-                            start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
-                        }
-                        "modified" => {
-                            debug!("Got list event");
-                            let new_note: Note = serde_json::from_str(&message.data)
-                                .expect("Should receive valid note from modified event");
-                            let mut current_notes = state.notes.lock().await;
-                            if let Some(managed_note) = current_notes.get(&new_note.name) {
-                                if matches!(new_note.desired_state, DesiredState::Run)
-                                    && !matches!(managed_note.note.state, NoteState::Running)
-                                {
-                                    start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
+        // We'll wrap our SSE loop in a `tokio::select!` to allow early exit on Ctrl-C.
+        tokio::select! {
+            // SSE subscription loop
+            _ = async {
+                while let Some(item) = es.next().await {
+                    match item {
+                        Ok(reqwest_eventsource::Event::Open) => info!("Connection Opened!"),
+                        Ok(reqwest_eventsource::Event::Message(message)) => match message.event.as_str() {
+                            "list" => {
+                                debug!(notes = message.data, "Got list event");
+                                // data is a list of notes
+                                let notes: Vec<Note> = serde_json::from_str(&message.data)
+                                    .expect("Should have received valid list of notes");
+                                synchronize_state(&mut state, notes, process_exit_tx.clone()).await;
+                            }
+                            "added" => {
+                                debug!("Got added event");
+                                let new_note = serde_json::from_str(&message.data)
+                                    .expect("Should receive valid note from added event");
+                                let mut current_notes = state.notes.lock().await;
+                                start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
+                            }
+                            "modified" => {
+                                debug!("Got modified event");
+                                let new_note: Note = serde_json::from_str(&message.data)
+                                    .expect("Should receive valid note from modified event");
+                                let mut current_notes = state.notes.lock().await;
+                                if let Some(managed_note) = current_notes.get(&new_note.name) {
+                                    if matches!(new_note.desired_state, DesiredState::Run)
+                                        && !matches!(managed_note.note.state, NoteState::Running)
+                                    {
+                                        start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
+                                    }
+                                    // if the desired state is stop, stop process
+                                    // if running and set state to terminated
+                                    else if matches!(new_note.desired_state, DesiredState::Stop)
+                                    {
+                                        stop_note(&mut current_notes, &new_note.name).await;
+                                    }
+                                } else {
+                                    warn!("Got modified event for untracked note");
                                 }
-                                // if the desired state is stop, stop process
-                                // if running and set state to terminated
-                                else if matches!(new_note.desired_state, DesiredState::Stop)
-                                {
+                            }
+                            "deleted" => {
+                                debug!("Got deleted event");
+                                let new_note: Note = serde_json::from_str(&message.data)
+                                    .expect("Deleted event should give valid note");
+                                let mut current_notes = state.notes.lock().await;
+                                if current_notes.get(&new_note.name).is_some() {
                                     stop_note(&mut current_notes, &new_note.name).await;
                                 }
-                            } else {
-                                warn!("Got modified event for untracked note");
+                                current_notes.remove(&new_note.name);
                             }
-                        }
-                        "deleted" => {
-                            debug!("Got list event");
-                            let new_note: Note = serde_json::from_str(&message.data)
-                                .expect("Deleted event should give valid note");
-                            let mut current_notes = state.notes.lock().await;
-                            if current_notes.get(&new_note.name).is_some() {
-                                stop_note(&mut current_notes, &new_note.name).await;
+                            _ => {
+                                warn!("Unexpected message: {:#?}", message);
                             }
-                            current_notes.remove(&new_note.name);
+                        },
+                        Err(err) => {
+                            es.close();
+                            panic!("Event source error: {:#?}", err)
                         }
-                        _ => {
-                            warn!("Unexpected message: {:#?}", message);
-                        }
-                    },
-                    Err(err) => {
-                        es.close();
-                        panic!("Event source error: {:#?}", err)
                     }
                 }
+            } => {},
+            _ = ct_child.cancelled() => {
+                info!("Exiting SSE Task");
             }
-        } => {},
-
-        // Exit on Ctrl-C
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received Ctrl-C signal, initiating shutdown.");
         }
-    }
+    });
+
+    _ = tokio::signal::ctrl_c().await;
+    info!("Received Ctrl-C signal, initiating shutdown.");
+    ct.cancel();
 
     // Either the SSE stream ended or we caught Ctrl-C.
     // Proceed with your shutdown logic.
