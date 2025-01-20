@@ -8,20 +8,18 @@ export function SymphonyItem({ symphony }) {
 
   const toggleSymphony = async () => {
     if (isRunning) {
-      const resp = await fetch(`/api/v1/symphonies/${symphony.name}/stop`, {
+      await fetch(`/api/v1/symphonies/${symphony.name}/stop`, {
         method: "POST",
       });
-      console.log(resp);
     } else {
       // This would typically be an API call
-      const resp = await fetch("/api/v1/symphonies", {
+      await fetch("/api/v1/symphonies", {
         method: "POST",
         body: JSON.stringify(symphony),
         headers: {
           "Content-Type": "Application/json",
         },
       });
-      console.log(resp);
     }
   };
 

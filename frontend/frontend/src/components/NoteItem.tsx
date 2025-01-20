@@ -4,7 +4,6 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
 export function NoteItem({ note, symphonyId }) {
   const isRunning = note.state == "Running";
-  console.log(note);
 
   const toggleNote = () => {
     // This would typically be an API call

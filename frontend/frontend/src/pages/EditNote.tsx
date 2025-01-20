@@ -1,9 +1,8 @@
-import { useParams, useNavigate } from "react-router";
+import { useParams } from "react-router";
 import { NoteForm } from "../components/NoteForm";
 import { useSymphonies } from "@/lib/SymphonyProvider";
 
 export default function EditNote() {
-  // const navigate = useNavigate();
   const { symphonyId, noteId } = useParams();
   const { trackedSymphonies, updateSymphony } = useSymphonies();
   const note = trackedSymphonies
@@ -21,7 +20,6 @@ export default function EditNote() {
         return { ...n };
       }
     });
-    console.log(existingSymphony);
     updateSymphony(existingSymphony);
   };
 

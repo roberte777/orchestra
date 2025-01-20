@@ -226,7 +226,6 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
         }
         return s;
       });
-      console.log("new list: ", newList);
       return [...newList];
     });
   };
