@@ -1,5 +1,8 @@
-use crate::maestro::models::{Principal, SharedStore};
 use async_trait::async_trait;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::maestro::models::{Principal, SharedStore};
 
 #[async_trait]
 pub trait PrincipalRepository: Send + Sync {
@@ -8,7 +11,7 @@ pub trait PrincipalRepository: Send + Sync {
 }
 
 pub struct InMemoryPrincipalRepository {
-    store: SharedStore,
+    pub store: SharedStore,
 }
 
 impl InMemoryPrincipalRepository {
@@ -26,11 +29,10 @@ impl PrincipalRepository for InMemoryPrincipalRepository {
 
     async fn upsert_principal(&self, principal: Principal) {
         let mut store = self.store.lock().await;
-
-        // check if principal exists
-        if store.get_principal(&principal.host()).is_some() {
-            // if it exists, update
-            _ = store.update_principal(principal);
+        // If the principal already exists, update; otherwise, insert:
+        let host = principal.host.clone();
+        if store.get_principal(&host).is_some() {
+            let _ = store.update_principal(principal);
         } else {
             store.add_principal(principal);
         }

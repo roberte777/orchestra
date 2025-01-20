@@ -14,82 +14,8 @@ use watcher::EventType;
 
 use crate::maestro::{
     models::{DesiredState, NoteState, Principal, PrincipalState},
-    repositories::symphony,
     AppState,
 };
-
-async fn principal_heartbeat(
-    State(app_state): State<Arc<AppState>>,
-    Json(heartbeat): Json<HeartbeatDto>,
-) {
-    info!("got heartbeat: {:?}", heartbeat);
-    let principal_repo = app_state.principal_repository.lock().await;
-    let note_repo = app_state.note_repository.lock().await;
-    let symphony_repo = app_state.symphony_repository.lock().await;
-
-    for note in heartbeat.notes {
-        // remove terminated notes from state
-        if matches!(note.state, NoteState::Terminated) {
-            // collect data
-            let note = match note_repo.get_note(&note.name).await {
-                Some(note) => note,
-                None => continue,
-            };
-            let symphony_name = note.symphony.clone();
-            let mut symphony = symphony_repo.get_symphony(&symphony_name).await.unwrap();
-
-            // update symphony
-            symphony.notes.retain(|n| *n != note.name);
-            let should_remove = matches!(symphony.desired_state(), DesiredState::Stop)
-                && symphony.notes().is_empty();
-            _ = symphony_repo.update_symphony(symphony).await;
-            //update note
-            note_repo.remove_note(&note.name).await;
-            let event = watcher::Event {
-                event_type: EventType::Deleted,
-                resource: note,
-            };
-            app_state.watch_manager.lock().await.notify_note(event);
-
-            // remove symphony if stop requested and all notes gone
-            if should_remove {
-                symphony_repo.remove_symphony(&symphony_name).await;
-            }
-        } else {
-            let mut note_update = note_repo
-                .get_note(&note.name)
-                .await
-                .expect("Should get valid note from principal heartbeat");
-
-            note_update.state = note.state;
-            note_repo.update_note(note_update).await;
-        }
-    }
-
-    let principal = Principal {
-        host: heartbeat.name,
-        capabilities: Vec::new(),
-        state: PrincipalState::Ready,
-        last_updated: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Should be able to get a valid duration since unix epoch")
-            .as_secs(),
-    };
-
-    principal_repo.upsert_principal(principal).await;
-}
-
-async fn get_principals(State(app_state): State<Arc<AppState>>) -> Json<Vec<Principal>> {
-    let principal_repo = app_state.principal_repository.lock().await;
-    let principals = principal_repo.get_all_principals().await;
-    Json(principals)
-}
-
-pub fn routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/", post(principal_heartbeat))
-        .route("/", get(get_principals))
-}
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct HeartbeatDto {
@@ -101,4 +27,89 @@ pub struct HeartbeatDto {
 pub struct HeartbeatNoteDto {
     pub name: String,
     pub state: NoteState,
+}
+
+async fn principal_heartbeat(
+    State(app_state): State<Arc<AppState>>,
+    Json(heartbeat): Json<HeartbeatDto>,
+) {
+    info!("got heartbeat: {:?}", heartbeat);
+
+    let principal_repo = app_state.principal_repository.lock().await;
+    let note_repo = app_state.note_repository.lock().await;
+    let symphony_repo = app_state.symphony_repository.lock().await;
+
+    // 1) Upsert the principal
+    let principal = Principal {
+        host: heartbeat.name.clone(),
+        capabilities: vec![],
+        state: PrincipalState::Ready,
+        last_updated: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("duration since epoch")
+            .as_secs(),
+    };
+    principal_repo.upsert_principal(principal).await;
+    drop(principal_repo);
+
+    // 2) For each note in the heartbeat, update or remove
+    for note_heartbeat in heartbeat.notes {
+        // If note is "Terminated," we might remove it entirely from the store
+        if matches!(note_heartbeat.state, NoteState::Terminated) {
+            if let Some(note) = note_repo.get_note(&note_heartbeat.name).await {
+                // Remove the note from the store
+                note_repo.remove_note(&note.name).await;
+                // Fire "Deleted" watch event
+                app_state
+                    .watch_manager
+                    .lock()
+                    .await
+                    .notify_note(watcher::Event {
+                        event_type: watcher::EventType::Deleted,
+                        resource: note.clone(),
+                    });
+
+                // Also remove from the symphony’s note list if needed:
+                if let Some(mut sym) = symphony_repo.get_symphony(&note.symphony).await {
+                    sym.notes.retain(|n| n != &note_heartbeat.name);
+                    // If that symphony has no notes and is desired_state=Stop, you might remove it entirely:
+                    if sym.notes.is_empty() && matches!(sym.desired_state(), DesiredState::Stop) {
+                        symphony_repo.remove_symphony(&sym.name).await;
+                        // If you want watchers for the symphony:
+                        // app_state.watch_manager.lock().await.notify_symphony(...);
+                    } else {
+                        // Otherwise, just update the symphony’s note list
+                        symphony_repo.update_symphony(sym).await;
+                    }
+                }
+            }
+        } else {
+            // The note is still alive, so update its state
+            if let Some(mut existing_note) = note_repo.get_note(&note_heartbeat.name).await {
+                existing_note.state = note_heartbeat.state;
+                note_repo.update_note(existing_note.clone()).await;
+                // You can optionally fire watchers for "modified" here, if you prefer.
+                // For example:
+                // app_state.watch_manager.lock().await.notify_note(watcher::Event {
+                //     event_type: watcher::EventType::Modified,
+                //     resource: existing_note,
+                // });
+            }
+        }
+    }
+
+    drop(note_repo);
+    drop(symphony_repo);
+}
+
+async fn get_principals(State(app_state): State<Arc<AppState>>) -> Json<Vec<Principal>> {
+    let principal_repo = app_state.principal_repository.lock().await;
+    let all = principal_repo.get_all_principals().await;
+    Json(all)
+}
+
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", post(principal_heartbeat))
+        .route("/", get(get_principals))
 }

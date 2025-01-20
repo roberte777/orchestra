@@ -1,0 +1,3437 @@
+Project Folder Structure:
+========================
+.
+  watcher
+    src
+  frontend
+    frontend
+      public
+      src
+        components
+          ui
+        lib
+        assets
+        pages
+    src
+  orchestra
+    src
+      principal
+      bin
+      maestro
+        repositories
+        models
+        routes
+
+Files with Contents:
+====================
+
+==== ./Cargo.toml ====
+
+[workspace]
+resolver = "2"
+members = [
+    "orchestra", 
+    "watcher",
+    "frontend"
+]
+
+==== ./watcher/Cargo.toml ====
+
+[package]
+name = "watcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.41.0", features = ["full"] }
+
+==== ./watcher/src/lib.rs ====
+
+pub mod field_selector;
+pub use field_selector::{FieldCondition, FieldSelector, FieldSelectorBuilder, Operator};
+use std::{
+    fmt::{Display, Formatter},
+    sync::Arc,
+};
+
+use tokio::sync::mpsc;
+
+#[derive(Clone, Debug)]
+pub enum EventType {
+    Added,
+    Modified,
+    Deleted,
+}
+
+#[derive(Clone, Debug)]
+pub struct Event<T> {
+    pub event_type: EventType,
+    pub resource: T,
+}
+
+impl Display for EventType {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let event_type_str = match self {
+            EventType::Added => "added",
+            EventType::Modified => "modified",
+            EventType::Deleted => "deleted",
+        };
+        write!(f, "{}", event_type_str)
+    }
+}
+
+struct Subscriber<T> {
+    field_conditions: Vec<FieldCondition>,
+    sender: mpsc::UnboundedSender<Arc<Event<T>>>,
+}
+
+pub struct Watcher<T>
+where
+    T: Watchable,
+{
+    subscribers: Vec<Subscriber<T>>,
+}
+
+impl<T> Watcher<T>
+where
+    T: Watchable,
+{
+    pub fn new() -> Self {
+        Self {
+            subscribers: Vec::new(),
+        }
+    }
+
+    pub fn subscribe(
+        &mut self,
+        field_selector: FieldSelector,
+    ) -> mpsc::UnboundedReceiver<Arc<Event<T>>> {
+        let field_conditions = field_selector.conditions;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.subscribers.push(Subscriber {
+            field_conditions,
+            sender,
+        });
+        receiver
+    }
+
+    pub fn notify(&mut self, event: Event<T>) {
+        let event = Arc::new(event);
+        self.subscribers.retain(|subscriber| {
+            if subscriber.sender.is_closed() {
+                // Remove the subscriber if the sender is closed
+                false
+            } else if Self::apply_field_conditions(&event.resource, &subscriber.field_conditions) {
+                // Try to send the event; remove the subscriber if send fails
+                subscriber.sender.send(event.clone()).is_ok()
+            } else {
+                // Field conditions do not match; keep the subscriber
+                true
+            }
+        });
+    }
+    fn apply_field_conditions(resource: &T, conditions: &[FieldCondition]) -> bool
+    where
+        T: Watchable,
+    {
+        for condition in conditions {
+            let field_value = resource.get_field_value(&condition.field_name);
+            match (&condition.operator, field_value) {
+                (Operator::Equals, Some(value)) => {
+                    if value != condition.value {
+                        return false;
+                    }
+                }
+                (Operator::NotEquals, Some(value)) => {
+                    if value == condition.value {
+                        return false;
+                    }
+                }
+                _ => {
+                    // Field not found or other issue
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+impl<T> Default for Watcher<T>
+where
+    T: Watchable + Clone,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub trait Watchable {
+    fn get_field_value(&self, field_name: &str) -> Option<String>;
+}
+
+#[cfg(test)]
+mod test {
+    use mpsc::error::TryRecvError;
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct MockResource {
+        foo: String,
+    }
+
+    impl Watchable for MockResource {
+        fn get_field_value(&self, field_name: &str) -> Option<String> {
+            match field_name {
+                "foo" => Some(self.foo.clone()),
+                _ => None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_watcher() {
+        let mut watcher = Watcher::<MockResource>::new();
+
+        let field_selector = FieldSelectorBuilder::new().eq("foo", "bar").build();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = MockResource {
+            foo: "bar".to_string(),
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv().expect("Should be able to receive");
+        assert_eq!(event.resource.foo, "bar");
+    }
+
+    struct NestedResource {
+        mock: MockResource,
+    }
+
+    impl Watchable for NestedResource {
+        fn get_field_value(&self, field_name: &str) -> Option<String> {
+            match field_name {
+                "mock.foo" => Some(self.mock.foo.clone()),
+                _ => None,
+            }
+        }
+    }
+    #[tokio::test]
+    async fn test_nested_watcher() {
+        let mut watcher = Watcher::<NestedResource>::new();
+
+        let field_selector = FieldSelectorBuilder::new().eq("mock.foo", "bar").build();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = NestedResource {
+            mock: MockResource {
+                foo: "bar".to_string(),
+            },
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv().expect("Should be able to receive");
+        assert_eq!(event.resource.mock.foo, "bar");
+    }
+
+    #[tokio::test]
+    async fn test_negative_nested_watcher() {
+        let mut watcher = Watcher::<NestedResource>::new();
+
+        let field_selector = FieldSelectorBuilder::new().eq("foo", "non match").build();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = NestedResource {
+            mock: MockResource {
+                foo: "bar".to_string(),
+            },
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv();
+        assert!(matches!(event, Err(TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn test_no_selector() {
+        let mut watcher = Watcher::<NestedResource>::new();
+
+        let field_selector = FieldSelector::default();
+        let mut receiver = watcher.subscribe(field_selector);
+
+        let resource1 = NestedResource {
+            mock: MockResource {
+                foo: "bar".to_string(),
+            },
+        };
+
+        watcher.notify(Event {
+            event_type: EventType::Added,
+            resource: resource1,
+        });
+
+        let event = receiver.try_recv().expect("Should be able to receive");
+        assert_eq!(event.resource.mock.foo, "bar");
+    }
+}
+
+==== ./watcher/src/field_selector.rs ====
+
+#[derive(Debug)]
+pub enum Operator {
+    Equals,
+    NotEquals,
+}
+
+pub struct FieldSelectorBuilder {
+    conditions: Vec<FieldCondition>,
+}
+
+impl FieldSelectorBuilder {
+    pub fn new() -> Self {
+        Self {
+            conditions: Vec::new(),
+        }
+    }
+
+    pub fn eq(mut self, field_name: &str, value: &str) -> Self {
+        self.conditions.push(FieldCondition {
+            field_name: field_name.to_string(),
+            operator: Operator::Equals,
+            value: value.to_string(),
+        });
+        self
+    }
+
+    pub fn ne(mut self, field_name: &str, value: &str) -> Self {
+        self.conditions.push(FieldCondition {
+            field_name: field_name.to_string(),
+            operator: Operator::NotEquals,
+            value: value.to_string(),
+        });
+        self
+    }
+
+    pub fn build(self) -> FieldSelector {
+        FieldSelector {
+            conditions: self.conditions,
+        }
+    }
+}
+
+impl Default for FieldSelectorBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct FieldCondition {
+    pub field_name: String,
+    pub operator: Operator,
+    pub value: String,
+}
+#[derive(Debug)]
+pub struct FieldSelector {
+    pub conditions: Vec<FieldCondition>,
+}
+
+impl FieldSelector {
+    pub fn new() -> Self {
+        Self {
+            conditions: Vec::new(),
+        }
+    }
+
+    fn add_eq(&mut self, field_name: &str, value: &str) {
+        self.conditions.push(FieldCondition {
+            field_name: field_name.to_string(),
+            operator: Operator::Equals,
+            value: value.to_string(),
+        });
+    }
+
+    fn add_ne(&mut self, field_name: &str, value: &str) {
+        self.conditions.push(FieldCondition {
+            field_name: field_name.to_string(),
+            operator: Operator::NotEquals,
+            value: value.to_string(),
+        });
+    }
+
+    pub fn builder() -> FieldSelectorBuilder {
+        FieldSelectorBuilder::new()
+    }
+
+    pub fn from_query(field_selector: &str) -> Self {
+        let mut conditions = Self::new();
+        let selectors = field_selector.split(',');
+        for selector in selectors {
+            let (field_name, operator, value) = if let Some(pos) = selector.find("!=") {
+                (
+                    selector[..pos].to_string(),
+                    Operator::NotEquals,
+                    selector[pos + 2..].to_string(),
+                )
+            } else if let Some(pos) = selector.find('=') {
+                (
+                    selector[..pos].to_string(),
+                    Operator::Equals,
+                    selector[pos + 1..].to_string(),
+                )
+            } else {
+                continue; // Invalid selector, skip
+            };
+
+            match operator {
+                Operator::NotEquals => conditions.add_ne(&field_name, &value),
+                Operator::Equals => conditions.add_eq(&field_name, &value),
+            };
+        }
+        conditions
+    }
+}
+
+impl Default for FieldSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+==== ./frontend/Cargo.toml ====
+
+[package]
+name = "frontend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8.1"
+include_dir = "0.7.4"
+mime_guess = "2.0.5"
+reqwest = {version = "0.12.12", features = ["json"]}
+serde = { version = "1.0.217", features = ["derive"] }
+tokio = { version = "1.43.0", features = ["full"] }
+
+[features]
+frontend = []
+
+==== ./frontend/frontend/tailwind.config.js ====
+
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+    darkMode: ["class"],
+    content: ["./index.html", "./src/**/*.{ts,tsx,js,jsx}"],
+  theme: {
+  	extend: {
+  		borderRadius: {
+  			lg: 'var(--radius)',
+  			md: 'calc(var(--radius) - 2px)',
+  			sm: 'calc(var(--radius) - 4px)'
+  		},
+  		colors: {
+  			background: 'hsl(var(--background))',
+  			foreground: 'hsl(var(--foreground))',
+  			card: {
+  				DEFAULT: 'hsl(var(--card))',
+  				foreground: 'hsl(var(--card-foreground))'
+  			},
+  			popover: {
+  				DEFAULT: 'hsl(var(--popover))',
+  				foreground: 'hsl(var(--popover-foreground))'
+  			},
+  			primary: {
+  				DEFAULT: 'hsl(var(--primary))',
+  				foreground: 'hsl(var(--primary-foreground))'
+  			},
+  			secondary: {
+  				DEFAULT: 'hsl(var(--secondary))',
+  				foreground: 'hsl(var(--secondary-foreground))'
+  			},
+  			muted: {
+  				DEFAULT: 'hsl(var(--muted))',
+  				foreground: 'hsl(var(--muted-foreground))'
+  			},
+  			accent: {
+  				DEFAULT: 'hsl(var(--accent))',
+  				foreground: 'hsl(var(--accent-foreground))'
+  			},
+  			destructive: {
+  				DEFAULT: 'hsl(var(--destructive))',
+  				foreground: 'hsl(var(--destructive-foreground))'
+  			},
+  			border: 'hsl(var(--border))',
+  			input: 'hsl(var(--input))',
+  			ring: 'hsl(var(--ring))',
+  			chart: {
+  				'1': 'hsl(var(--chart-1))',
+  				'2': 'hsl(var(--chart-2))',
+  				'3': 'hsl(var(--chart-3))',
+  				'4': 'hsl(var(--chart-4))',
+  				'5': 'hsl(var(--chart-5))'
+  			}
+  		}
+  	}
+  },
+  plugins: [require("tailwindcss-animate")],
+};
+
+==== ./frontend/frontend/package.json ====
+
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.1.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.473.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router": "^7.1.2",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.7",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "globals": "^15.14.0",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.6.2",
+    "typescript-eslint": "^8.18.2",
+    "vite": "^6.0.5"
+  }
+}
+
+==== ./frontend/frontend/components.json ====
+
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "tailwind.config.js",
+    "css": "src/index.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@/components",
+    "utils": "@/lib/utils",
+    "ui": "@/components/ui",
+    "lib": "@/lib",
+    "hooks": "@/hooks"
+  },
+  "iconLibrary": "lucide"
+}
+==== ./frontend/frontend/eslint.config.js ====
+
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import tseslint from 'typescript-eslint'
+
+export default tseslint.config(
+  { ignores: ['dist'] },
+  {
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    files: ['**/*.{ts,tsx}'],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+    plugins: {
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
+    },
+    rules: {
+      ...reactHooks.configs.recommended.rules,
+      'react-refresh/only-export-components': [
+        'warn',
+        { allowConstantExport: true },
+      ],
+    },
+  },
+)
+
+==== ./frontend/frontend/postcss.config.js ====
+
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+==== ./frontend/frontend/src/App.tsx ====
+
+import { Routes, Route } from "react-router";
+import Home from "./pages/Home";
+import NewSymphony from "./pages/NewSymphony";
+import EditSymphony from "./pages/EditSymphony";
+import NewNote from "./pages/NewNote";
+import EditNote from "./pages/EditNote";
+
+function App() {
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-4">Symphony Manager</h1>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/new-symphony" element={<NewSymphony />} />
+        <Route path="/edit-symphony/:id" element={<EditSymphony />} />
+        <Route path="/new-note/:symphonyId" element={<NewNote />} />
+        <Route path="/edit-note/:symphonyId/:noteId" element={<EditNote />} />
+      </Routes>
+    </div>
+  );
+}
+
+export default App;
+
+==== ./frontend/frontend/src/main.tsx ====
+
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import "./index.css";
+import App from "./App.tsx";
+import { BrowserRouter } from "react-router";
+import { SymphoniesProvider } from "./lib/SymphonyProvider.tsx";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <BrowserRouter>
+      <SymphoniesProvider>
+        <App />
+      </SymphoniesProvider>
+    </BrowserRouter>
+  </StrictMode>,
+);
+
+==== ./frontend/frontend/src/components/ui/card.tsx ====
+
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+const Card = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      "rounded-xl border bg-card text-card-foreground shadow",
+      className
+    )}
+    {...props}
+  />
+))
+Card.displayName = "Card"
+
+const CardHeader = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex flex-col space-y-1.5 p-6", className)}
+    {...props}
+  />
+))
+CardHeader.displayName = "CardHeader"
+
+const CardTitle = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("font-semibold leading-none tracking-tight", className)}
+    {...props}
+  />
+))
+CardTitle.displayName = "CardTitle"
+
+const CardDescription = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+))
+CardDescription.displayName = "CardDescription"
+
+const CardContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
+))
+CardContent.displayName = "CardContent"
+
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex items-center p-6 pt-0", className)}
+    {...props}
+  />
+))
+CardFooter.displayName = "CardFooter"
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent }
+
+==== ./frontend/frontend/src/components/ui/button.tsx ====
+
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default:
+          "bg-primary text-primary-foreground shadow hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+        outline:
+          "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",
+        secondary:
+          "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-9 px-4 py-2",
+        sm: "h-8 rounded-md px-3 text-xs",
+        lg: "h-10 rounded-md px-8",
+        icon: "h-9 w-9",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : "button"
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...props}
+      />
+    )
+  }
+)
+Button.displayName = "Button"
+
+export { Button, buttonVariants }
+
+==== ./frontend/frontend/src/components/ui/textarea.tsx ====
+
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+const Textarea = React.forwardRef<
+  HTMLTextAreaElement,
+  React.ComponentProps<"textarea">
+>(({ className, ...props }, ref) => {
+  return (
+    <textarea
+      className={cn(
+        "flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+        className
+      )}
+      ref={ref}
+      {...props}
+    />
+  )
+})
+Textarea.displayName = "Textarea"
+
+export { Textarea }
+
+==== ./frontend/frontend/src/components/ui/input.tsx ====
+
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<"input">>(
+  ({ className, type, ...props }, ref) => {
+    return (
+      <input
+        type={type}
+        className={cn(
+          "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+          className
+        )}
+        ref={ref}
+        {...props}
+      />
+    )
+  }
+)
+Input.displayName = "Input"
+
+export { Input }
+
+==== ./frontend/frontend/src/components/NoteItem.tsx ====
+
+import { Link } from "react-router";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+
+export function NoteItem({ note, symphonyId }) {
+  const isRunning = note.state == "Running";
+  console.log(note);
+
+  const toggleNote = () => {
+    // This would typically be an API call
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex justify-between items-center">
+          <span>{note.name}</span>
+          <div>
+            <Button
+              onClick={toggleNote}
+              variant={isRunning ? "destructive" : "default"}
+              size="sm"
+              className="mr-2"
+            >
+              {isRunning ? "Stop" : "Start"}
+            </Button>
+            <Link to={`/edit-note/${symphonyId}/${note.id}`}>
+              <Button variant="outline" size="sm">
+                Edit
+              </Button>
+            </Link>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p>Status: {isRunning ? "Running" : "Stopped"}</p>
+        <p>Description: {note.description}</p>
+        <p>Host: {note.host}</p>
+        <p>Command: {note.command}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+==== ./frontend/frontend/src/components/NoteForm.tsx ====
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+  CardFooter,
+} from "@/components/ui/card";
+
+export function NoteForm({ note, onSubmit }) {
+  const [formData, setFormData] = useState({
+    name: note?.name || "",
+    description: note?.description || "",
+    host: note?.host || "",
+    command: note?.command || "",
+    args: note?.args?.join(" ") || "",
+    env: note?.env
+      ? Object.entries(note.env)
+          .map(([key, value]) => `${key}=${value}`)
+          .join("\n")
+      : "",
+    restart_policy: note?.restart_policy || "always",
+  });
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const submitData = {
+      ...formData,
+      args: formData.args.split(" ").filter((arg) => arg.trim() !== ""),
+      env: Object.fromEntries(
+        formData.env
+          .split("\n")
+          .filter((line) => line.includes("="))
+          .map((line) => line.split("=").map((part) => part.trim())),
+      ),
+    };
+    onSubmit(submitData);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{note ? "Edit Note" : "Create Note"}</CardTitle>
+      </CardHeader>
+      <form onSubmit={handleSubmit}>
+        <CardContent className="space-y-4">
+          <div>
+            <label
+              htmlFor="name"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Name
+            </label>
+            <Input
+              type="text"
+              id="name"
+              name="name"
+              value={formData.name}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="description"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Description
+            </label>
+            <Textarea
+              id="description"
+              name="description"
+              value={formData.description}
+              onChange={handleChange}
+              rows={3}
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="host"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Host
+            </label>
+            <Input
+              type="text"
+              id="host"
+              name="host"
+              value={formData.host}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="command"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Command
+            </label>
+            <Input
+              type="text"
+              id="command"
+              name="command"
+              value={formData.command}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="args"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Arguments (space-separated)
+            </label>
+            <Input
+              type="text"
+              id="args"
+              name="args"
+              value={formData.args}
+              onChange={handleChange}
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="env"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Environment Variables (KEY=VALUE, one per line)
+            </label>
+            <Textarea
+              id="env"
+              name="env"
+              value={formData.env}
+              onChange={handleChange}
+              rows={3}
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="restart_policy"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Restart Policy
+            </label>
+            <select
+              id="restart_policy"
+              name="restart_policy"
+              value={formData.restart_policy}
+              onChange={handleChange}
+              className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+            >
+              <option value="always">Always</option>
+              <option value="on-failure">On Failure</option>
+              <option value="never">Never</option>
+            </select>
+          </div>
+        </CardContent>
+        <CardFooter>
+          <Button type="submit">{note ? "Update" : "Create"}</Button>
+        </CardFooter>
+      </form>
+    </Card>
+  );
+}
+
+==== ./frontend/frontend/src/components/SymphonyList.tsx ====
+
+import { useSymphonies } from "@/lib/SymphonyProvider";
+import { SymphonyItem } from "./SymphonyItem";
+
+export function SymphonyList() {
+  const { trackedSymphonies } = useSymphonies();
+  return (
+    <div className="space-y-4">
+      {trackedSymphonies.map((symphony) => (
+        <SymphonyItem key={symphony.name} symphony={symphony} />
+      ))}
+    </div>
+  );
+}
+
+==== ./frontend/frontend/src/components/SymphonyItem.tsx ====
+
+import { Link } from "react-router";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { NoteItem } from "./NoteItem";
+
+export function SymphonyItem({ symphony }) {
+  const isRunning = symphony.state === "Running";
+
+  const toggleSymphony = async () => {
+    if (isRunning) {
+      const resp = await fetch(`/api/v1/symphonies/${symphony.name}/stop`, {
+        method: "POST",
+      });
+      console.log(resp);
+    } else {
+      // This would typically be an API call
+      const resp = await fetch("/api/v1/symphonies", {
+        method: "POST",
+        body: JSON.stringify(symphony),
+        headers: {
+          "Content-Type": "Application/json",
+        },
+      });
+      console.log(resp);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex justify-between items-center">
+          <span>{symphony.name}</span>
+          <div>
+            <Button
+              onClick={toggleSymphony}
+              variant={isRunning ? "destructive" : "default"}
+              className="mr-2"
+            >
+              {isRunning ? "Stop" : "Start"}
+            </Button>
+            <Link to={`/edit-symphony/${symphony.id}`}>
+              <Button variant="outline" className="mr-2">
+                Edit
+              </Button>
+            </Link>
+            <Link to={`/new-note/${symphony.id}`}>
+              <Button variant="outline">Add Note</Button>
+            </Link>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2">
+          {symphony.notes.map((note) => (
+            <NoteItem key={note.id} note={note} symphonyId={symphony.id} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+==== ./frontend/frontend/src/components/SymphonyForm.tsx ====
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+  CardFooter,
+} from "@/components/ui/card";
+
+export function SymphonyForm({ symphony, onSubmit }) {
+  const [name, setName] = useState(symphony?.name || "");
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSubmit({ name });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{symphony ? "Edit Symphony" : "Create Symphony"}</CardTitle>
+      </CardHeader>
+      <form onSubmit={handleSubmit}>
+        <CardContent>
+          <div className="space-y-4">
+            <div>
+              <label
+                htmlFor="name"
+                className="block text-sm font-medium text-gray-700"
+              >
+                Symphony Name
+              </label>
+              <Input
+                type="text"
+                id="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+        </CardContent>
+        <CardFooter>
+          <Button type="submit">{symphony ? "Update" : "Create"}</Button>
+        </CardFooter>
+      </form>
+    </Card>
+  );
+}
+
+==== ./frontend/frontend/src/vite-env.d.ts ====
+
+/// <reference types="vite/client" />
+
+==== ./frontend/frontend/src/lib/SymphonyProvider.tsx ====
+
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  PropsWithChildren,
+} from "react";
+
+type SymphonyState = "Running" | "Stopped";
+type NoteState = "Pending" | "Running" | "Crashed" | "Completed" | "Terminated";
+
+// Example Note / Symphony shapes
+interface Note {
+  name: string;
+  description: string;
+  host: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  restart_policy: string; // Replace with your real RestartPolicy type
+  symphony: string; // "Parent" symphony name
+  state: NoteState; // Replace with real NoteState type
+  desired_state: string; // Replace with real DesiredState type
+}
+
+interface Symphony {
+  name: string;
+  notes: Note[];
+  state: SymphonyState;
+}
+
+// Define the shape of our context
+interface SymphoniesContextValue {
+  trackedSymphonies: Symphony[];
+  addSymphony: (newSymphony: Symphony) => void;
+  removeSymphony: (name: string) => void;
+}
+
+// Create the context
+const SymphoniesContext = createContext<SymphoniesContextValue | undefined>(
+  undefined,
+);
+
+// Create a custom hook to consume it easily
+export const useSymphonies = (): SymphoniesContextValue => {
+  const context = useContext(SymphoniesContext);
+  if (!context) {
+    throw new Error("useSymphonies must be used within a SymphoniesProvider");
+  }
+  return context;
+};
+
+// Hard-coded initial symphonies (for app startup)
+const initialSymphonies: Symphony[] = [
+  {
+    name: "Symphony1",
+    state: "Stopped",
+    notes: [
+      {
+        name: "Note1",
+        description: "First note",
+        host: "me",
+        command: "echo",
+        args: ["Hello", "World"],
+        env: {
+          VAR1: "value1",
+          VAR2: "value2",
+        },
+        restart_policy: "Never",
+        symphony: "Symphony1",
+        state: "Pending",
+        desired_state: "Stop",
+      },
+      {
+        name: "Note2",
+        description: "Second note",
+        host: "me",
+        command: "ping",
+        args: ["127.0.0.1"],
+        env: {
+          VAR1: "value1",
+        },
+        restart_policy: "OnFailure",
+        symphony: "Symphony1",
+        state: "Pending",
+        desired_state: "Stop",
+      },
+    ],
+  },
+  {
+    name: "MyHardcodedSymphony",
+    state: "Stopped",
+    notes: [
+      {
+        name: "HardcodedNote1",
+        description: "Example note",
+        host: "localhost",
+        command: "echo",
+        args: ["Hello", "World"],
+        env: {},
+        restart_policy: "OnFailure",
+        symphony: "MyHardcodedSymphony",
+        state: "Running",
+        desired_state: "Stop",
+      },
+    ],
+  },
+  // Add more if desired...
+];
+
+// Provider component
+export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
+  children,
+}) => {
+  // "trackedSymphonies" includes our initial/hard-coded ones + any user-added
+  const [trackedSymphonies, setTrackedSymphonies] =
+    useState<Symphony[]>(initialSymphonies);
+
+  // 1. Poll the server for symphonies every X seconds
+  // 2. If the server returns a symphony matching one in trackedSymphonies by name,
+  //    update the local trackedSymphonies data for that item.
+  useEffect(() => {
+    async function fetchServerSymphonies() {
+      try {
+        const resp = await fetch("/api/v1/symphonies");
+        if (!resp.ok) {
+          throw new Error("Failed to fetch symphonies");
+        }
+        const serverSymphonies: Symphony[] = await resp.json();
+
+        // Update any symphony in trackedSymphonies if the server returns
+        // a matching name. We do NOT add new ones automatically, because
+        // "tracked" means the user explicitly wants to track them.
+        setTrackedSymphonies((prev) => {
+          return prev.map((localSym) => {
+            // Check if serverSymphonies has a matching name
+            const match = serverSymphonies.find(
+              (srvSym) => srvSym.name === localSym.name,
+            );
+            if (match) {
+              localSym.state = "Running";
+              localSym.notes = localSym.notes.map((note) => {
+                const noteMatch = match.notes.find(
+                  (serverNote) => serverNote.name === note.name,
+                );
+                if (noteMatch) {
+                  console.log("notes match: ", noteMatch);
+                  return {
+                    ...noteMatch,
+                  };
+                } else {
+                  console.log("no notes match");
+                  return {
+                    ...note,
+                    state: "Terminated",
+                  };
+                }
+              });
+              return {
+                ...localSym,
+              };
+            } else {
+              localSym.state = "Stopped";
+              localSym.notes = localSym.notes.map((note) => {
+                note.state = "Terminated";
+                return note;
+              });
+              return {
+                ...localSym,
+              };
+            }
+          });
+        });
+      } catch (error) {
+        console.error("Error fetching symphonies:", error);
+      }
+    }
+
+    // Initial fetch on mount
+    fetchServerSymphonies();
+
+    // Poll every 5 seconds, for example
+    const intervalId = setInterval(fetchServerSymphonies, 5_000);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  // Function to add a new symphony to our tracked list
+  const addSymphony = (newSymphony: Symphony) => {
+    setTrackedSymphonies((prev) => {
+      // If it already exists by name, decide how to handle (warn user, skip, or update).
+      const exists = prev.some((s) => s.name === newSymphony.name);
+      if (exists) {
+        // In many apps, you'd handle duplicates more gracefully
+        console.warn(`Symphony '${newSymphony.name}' is already tracked.`);
+        return prev;
+      }
+      return [...prev, newSymphony];
+    });
+  };
+
+  // Function to remove a symphony from our tracked list
+  const removeSymphony = (name: string) => {
+    setTrackedSymphonies((prev) => prev.filter((sym) => sym.name !== name));
+  };
+
+  // The value we provide to our consumers
+  const value: SymphoniesContextValue = {
+    trackedSymphonies,
+    addSymphony,
+    removeSymphony,
+  };
+
+  return (
+    <SymphoniesContext.Provider value={value}>
+      {children}
+    </SymphoniesContext.Provider>
+  );
+};
+
+==== ./frontend/frontend/src/lib/utils.ts ====
+
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+==== ./frontend/frontend/src/pages/NewSymphony.tsx ====
+
+import { useNavigate } from "react-router";
+import { SymphonyForm } from "../components/SymphonyForm";
+
+export default function NewSymphony() {
+  const navigate = useNavigate();
+
+  const handleSubmit = async (data) => {
+    // This would typically be an API call to create a new symphony
+    console.log("Creating new symphony:", data);
+    navigate("/");
+  };
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-4">Create New Symphony</h2>
+      <SymphonyForm onSubmit={handleSubmit} />
+    </div>
+  );
+}
+
+==== ./frontend/frontend/src/pages/EditNote.tsx ====
+
+import { useParams, useNavigate } from "react-router";
+import { NoteForm } from "../components/NoteForm";
+
+export default function EditNote() {
+  const navigate = useNavigate();
+  const { symphonyId, noteId } = useParams();
+
+  // This would typically be fetched from an API
+  const note = {
+    id: noteId,
+    name: `Note ${noteId}`,
+    description: "Sample description",
+    host: "localhost",
+    command: "echo",
+    args: ["Hello", "World"],
+    env: { KEY: "VALUE" },
+    restart_policy: "always",
+  };
+
+  const handleSubmit = async (data) => {
+    // This would typically be an API call to update the note
+    console.log("Updating note:", { symphonyId, noteId, ...data });
+    navigate(`/edit-symphony/${symphonyId}`);
+  };
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-4">Edit Note</h2>
+      <NoteForm note={note} onSubmit={handleSubmit} />
+    </div>
+  );
+}
+
+==== ./frontend/frontend/src/pages/Home.tsx ====
+
+import { Link } from "react-router";
+import { Button } from "@/components/ui/button";
+import { SymphonyList } from "../components/SymphonyList";
+
+export default function Home() {
+  return (
+    <div>
+      <Link to="/new-symphony">
+        <Button className="mb-4">Create New Symphony</Button>
+      </Link>
+      <SymphonyList />
+    </div>
+  );
+}
+
+==== ./frontend/frontend/src/pages/EditSymphony.tsx ====
+
+import { useParams, useNavigate } from "react-router";
+import { SymphonyForm } from "../components/SymphonyForm";
+
+export default function EditSymphony() {
+  const navigate = useNavigate();
+  const { id } = useParams();
+
+  // This would typically be fetched from an API
+  const symphony = {
+    id,
+    name: `Symphony ${id}`,
+  };
+
+  const handleSubmit = async (data) => {
+    // This would typically be an API call to update the symphony
+    console.log("Updating symphony:", { id, ...data });
+    navigate("/");
+  };
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-4">Edit Symphony</h2>
+      <SymphonyForm symphony={symphony} onSubmit={handleSubmit} />
+    </div>
+  );
+}
+
+==== ./frontend/frontend/src/pages/NewNote.tsx ====
+
+import { useParams, useNavigate } from "react-router";
+import { NoteForm } from "../components/NoteForm";
+
+export default function NewNote() {
+  const navigate = useNavigate();
+  const { symphonyId } = useParams();
+
+  const handleSubmit = async (data) => {
+    // This would typically be an API call to create a new note
+    console.log("Creating new note:", { symphonyId, ...data });
+    navigate(`/edit-symphony/${symphonyId}`);
+  };
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-4">Create New Note</h2>
+      <NoteForm onSubmit={handleSubmit} />
+    </div>
+  );
+}
+
+==== ./frontend/build.rs ====
+
+#[cfg(feature = "frontend")]
+use std::process::Command;
+
+fn main() {
+    #[cfg(feature = "frontend")]
+    {
+        // Run the frontend build (e.g. npm or yarn)
+        // Adjust the below commands according to your actual build setup.
+        // You might need `npm install` once if you're not ensuring dependencies are installed.
+        let command = if cfg!(target_os = "windows") {
+            "npm.cmd"
+        } else {
+            "npm"
+        };
+        println!("Installing frontend dependencies");
+        let status = Command::new(command)
+            .args(["install"])
+            .current_dir("frontend")
+            .status()
+            .expect("Failed to run npm install for frontend");
+        if !status.success() {
+            panic!("npm build for frontend failed!");
+        }
+        println!("Building the frontend");
+        let status = Command::new(command)
+            .args(["run", "build"])
+            .current_dir("frontend")
+            .status()
+            .expect("Failed to run npm build for frontend");
+        if !status.success() {
+            panic!("npm build for frontend failed!");
+        }
+    }
+}
+
+==== ./frontend/src/main.rs ====
+
+use axum::{
+    body::Body,
+    extract::{Path, State},
+    http::{header, Response, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use include_dir::{include_dir, Dir};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    net::{IpAddr, SocketAddr},
+};
+
+#[cfg(feature = "frontend")]
+static FRONTEND_DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
+
+#[derive(Clone)]
+struct AppState {
+    maestro_url: String,
+    client: Client,
+}
+
+pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<u16>) {
+    let client = Client::new();
+    let app_state = AppState {
+        maestro_url,
+        client,
+    };
+    // build our application with a route
+    let mut app = Router::new()
+        .route("/api/v1/symphonies", get(get_symphonies))
+        .route("/api/v1/symphonies", post(start_symphony))
+        .route("/api/v1/symphonies/{name}/stop", post(stop_symphony))
+        .with_state(app_state);
+
+    #[cfg(feature = "frontend")]
+    {
+        app = app.route(
+            "/",
+            get(|| async {
+                // Call `serve_embedded` with an empty string
+                serve_embedded(Path("".to_owned())).await
+            }),
+        )
+    }
+
+    let ip: IpAddr = match host {
+        Some(address) => address.parse().expect("Failed to parse IP address"),
+        None => "127.0.0.1".to_string().parse().unwrap(),
+    };
+
+    let addr = SocketAddr::new(ip, port.unwrap_or(3000));
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("Failed to bind to port");
+    axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(feature = "frontend")]
+async fn serve_embedded(Path(req_path): Path<String>) -> impl IntoResponse {
+    // If path is empty, serve "index.html"
+    let req_path = if req_path.trim().is_empty() {
+        "index.html"
+    } else {
+        req_path.as_str()
+    };
+
+    match FRONTEND_DIST.get_file(req_path) {
+        Some(file) => {
+            let mime_type = mime_guess::from_path(req_path).first_or_octet_stream();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, mime_type.as_ref())
+                .body(Body::from(file.contents()))
+                .unwrap()
+        }
+        None => {
+            // File not found in the embed — fall back to index.html
+            match FRONTEND_DIST.get_file("index.html") {
+                Some(file) => {
+                    let mime_type = mime_guess::from_path("index.html").first_or_octet_stream();
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, mime_type.as_ref())
+                        .body(Body::from(file.contents()))
+                        .unwrap()
+                }
+                None => {
+                    // If even index.html doesn't exist, return 404
+                    Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Body::from("404 Not Found"))
+                        .unwrap()
+                }
+            }
+        }
+    }
+}
+
+async fn get_symphonies(State(app_state): State<AppState>) -> impl IntoResponse {
+    println!("got request");
+    let response = reqwest::get(format!("{}/api/v1/symphonies", app_state.maestro_url)).await;
+    match response {
+        Ok(resp) => {
+            println!("{:?}", resp);
+            // println!("{:?}", resp.text().await.unwrap());
+            // (StatusCode::OK, resp.json::<String>().await.unwrap())
+            (StatusCode::OK, resp.text().await.unwrap())
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to make request to maestro server".to_string(),
+        ),
+    }
+}
+
+/// Create and start a Symphony
+pub async fn start_symphony(
+    State(app_state): State<AppState>,
+    Json(symphony_dto): Json<SymphonyDto>,
+) -> impl IntoResponse {
+    let resp = app_state
+        .client
+        .post(format!("{}/api/v1/symphonies", app_state.maestro_url))
+        .json(&symphony_dto)
+        .send()
+        .await;
+    match resp {
+        Ok(resp) => (resp.status(), resp.text().await.unwrap()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to make request to maestro server".to_string(),
+        ),
+    }
+}
+
+pub async fn stop_symphony(
+    Path(name): Path<String>,
+    State(app_state): State<AppState>,
+) -> impl IntoResponse {
+    let resp = app_state
+        .client
+        .post(format!(
+            "{}/api/v1/symphonies/{}/stop",
+            app_state.maestro_url, name
+        ))
+        .send()
+        .await;
+    match resp {
+        Ok(resp) => (resp.status(), resp.text().await.unwrap()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to make request to maestro server".to_string(),
+        ),
+    }
+}
+
+#[derive(Clone, Deserialize, Debug, Serialize)]
+pub struct NoteDto {
+    pub name: String,
+    pub description: String,
+    pub host: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub restart_policy: RestartPolicy,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct SymphonyDto {
+    pub name: String,
+    pub notes: Vec<NoteDto>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum RestartPolicy {
+    Never,
+    OnFailure,
+    Always,
+}
+
+#[tokio::main]
+async fn main() {
+    let host = "127.0.0.1".to_string();
+    let port = 8888;
+    let maestro_url = "http://localhost:3000".to_string();
+    run_server(maestro_url, Some(host), Some(port)).await;
+}
+
+==== ./orchestra/Cargo.toml ====
+
+[package]
+name = "orchestra"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+async-trait = "0.1.83"
+axum = {version = "0.8.1", features = ["macros"]}
+futures = "0.3.31"
+reqwest = { version = "0.12.9", features = ["json"] }
+reqwest-eventsource = "0.6.0"
+serde = { version = "1.0.214", features = ["derive"] }
+serde_json = "1.0.132"
+shared_child = "1.0.1"
+tokio = { version = "1.41.0", features = ["full"] }
+tokio-stream = "0.1.16"
+tokio-util = "0.7.13"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+watcher = {path = "../watcher" }
+
+==== ./orchestra/src/principal/process_exits_actor.rs ====
+
+use std::ops::DerefMut;
+
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+
+use crate::{
+    maestro::models::{NoteState, RestartPolicy},
+    principal::{note_process::start_note, AppState},
+};
+
+/// This struct owns the background task that handles process exits.
+/// When you call `.start()`, it spawns the background task.
+/// When you call `.stop()`, it cancels the task and waits for it to exit.
+///
+/// Internally, it uses a `CancellationToken` to interrupt the loop, then kills
+/// any remaining processes before returning.
+#[derive(Default)]
+pub struct ProcessExitsActor {
+    join_handle: Option<JoinHandle<()>>,
+    cancel: CancellationToken,
+}
+
+impl ProcessExitsActor {
+    /// Create a new actor. Does not start the background task yet.
+    pub fn new() -> Self {
+        ProcessExitsActor {
+            join_handle: None,
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    /// Start the background task that listens on `rx` for `(proc_name, exit_code)` messages,
+    /// and updates the internal `AppState` accordingly.
+    ///
+    /// - `state`: The shared `AppState`
+    /// - `exit_tx`: For re-sending `(proc_name, exit_code)` if we restart
+    /// - `exit_rx`: The channel from which we receive `(proc_name, exit_code)` events
+    ///
+    /// If the background task is already running, this does nothing.
+    pub fn start(
+        &mut self,
+        state: AppState,
+        exit_tx: UnboundedSender<(String, i32)>,
+        mut exit_rx: UnboundedReceiver<(String, i32)>,
+    ) {
+        // If we already have a running task, do nothing:
+        if self.join_handle.is_some() {
+            warn!("ProcessExitsActor is already running. Ignoring .start().");
+            return;
+        }
+
+        let cancel = self.cancel.child_token();
+
+        // Spawn the background task:
+        let jh = tokio::spawn(async move {
+            loop {
+                // Either read from exit_rx, or see if we were cancelled
+                tokio::select! {
+                    maybe_msg = exit_rx.recv() => {
+                        // If channel was closed, or we got None, break out
+                        let (proc_name, exit_code) = match maybe_msg {
+                            Some(x) => x,
+                            None => {
+                                // All senders dropped => no more events
+                                info!("All senders dropped. Exiting process_exits task.");
+                                break;
+                            }
+                        };
+
+                        info!("Process '{}' exited with code {}.", proc_name, exit_code);
+
+                        // Lock the notes for processing
+                        let mut processes = state.notes.lock().await;
+                        let mut restart_process = false;
+
+                        // If this process still exists in the map, handle exit logic
+                        if let Some(proc_entry) = processes.get_mut(&proc_name) {
+                            // If we didn't mark it as Killed earlier, then it is Exited
+                            if matches!(proc_entry.note.state, NoteState::Terminated) {
+                                info!(note = proc_entry.note.name, "process terminated");
+                                // if it's manually terminated, don't restart
+                                continue;
+                            }
+
+                            // Set correct status
+                            if exit_code == 0 {
+                                proc_entry.note.state = NoteState::Completed;
+                            } else {
+                                proc_entry.note.state = NoteState::Crashed;
+                            }
+
+                            // Drop the old child (so we can start a fresh one if needed)
+                            proc_entry.child = None;
+
+                            // Evaluate restart policy
+                            match proc_entry.note.restart_policy {
+                                RestartPolicy::Always => {
+                                    info!("Restarting process {} due to 'always' policy.", proc_name);
+                                    restart_process = true;
+                                }
+                                RestartPolicy::OnFailure => {
+                                    if exit_code != 0 {
+                                        info!("Restarting process {} due to 'on-failure' policy.", proc_name);
+                                        restart_process = true;
+                                    }
+                                }
+                                _ => {
+                                    // "never" or unrecognized => do nothing
+                                }
+                            }
+                        }
+
+                        // If we need to restart, we re-acquire the note and start it
+                        if restart_process {
+                            let note = {
+                                let processes = state.notes.lock().await;
+                                if let Some(proc_entry) = processes.get(&proc_name) {
+                                    proc_entry.note.clone()
+                                } else {
+                                    // note was removed from map => do not restart
+                                    continue;
+                                }
+                            };
+
+                            // Re-start note
+                            start_note(
+                                state.notes.lock().await.deref_mut(),
+                                note,
+                                exit_tx.clone()
+                            ).await;
+                        }
+                    }
+
+                    // If we’re cancelled, break out of the loop
+                    _ = cancel.cancelled() => {
+                        info!("ProcessExitsActor received cancellation. Preparing to exit.");
+                        break;
+                    }
+                }
+            }
+
+            info!("Exiting 'handle_process_exits' thread");
+        });
+
+        self.join_handle = Some(jh);
+    }
+
+    /// Cancels the background task, waits for it to finish, and returns.
+    ///
+    /// If the background task is not running, this does nothing.
+    pub async fn stop(&mut self) {
+        if let Some(jh) = self.join_handle.take() {
+            // Cancel the loop
+            self.cancel.cancel();
+
+            // Wait for the background task to finish
+            let _ = jh.await;
+        } else {
+            warn!("ProcessExitsActor is not running. Ignoring .stop().");
+        }
+    }
+}
+
+==== ./orchestra/src/principal/mod.rs ====
+
+pub mod process_exits_actor;
+use anyhow::Result;
+pub mod note_process;
+use note_process::ManagedNote;
+use reqwest::Client;
+use std::{collections::HashMap, sync::Arc, time::Duration};
+
+use tokio::{
+    sync::Mutex,
+    task::JoinHandle,
+    time::{self},
+};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
+
+use crate::maestro::routes::principals::{HeartbeatDto, HeartbeatNoteDto};
+
+#[derive(Default, Debug, Clone)]
+pub struct AppState {
+    pub notes: Arc<Mutex<HashMap<String, ManagedNote>>>,
+}
+
+struct HeartbeatTaskState {
+    task: JoinHandle<()>,
+    cancellation_token: CancellationToken,
+}
+
+pub struct HeartbeatActor {
+    url: String,
+    heartbat_state: Option<HeartbeatTaskState>,
+}
+
+impl HeartbeatActor {
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            heartbat_state: None,
+        }
+    }
+
+    pub fn start(&mut self, state: AppState) {
+        let mut interval = time::interval(Duration::from_secs(5));
+        let cancel = CancellationToken::new();
+        let child = cancel.child_token();
+        let url = self.url.clone();
+
+        // TODO: Try heartbeat first to see if the url can be reached
+
+        let jh = tokio::spawn(async move {
+            let client = Client::new();
+            loop {
+                //TODO: Take some sort of action if heartbeat fails.
+                let notes = state.notes.lock().await;
+                let _ = heartbeat_task(&url, &client, &notes).await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // continue to next iteration
+                    }
+                    _ = child.cancelled() => { break }
+                }
+            }
+            info!("Exiting heartbeat task");
+        });
+
+        let heartbeat_state = HeartbeatTaskState {
+            task: jh,
+            cancellation_token: cancel,
+        };
+
+        self.heartbat_state = Some(heartbeat_state);
+    }
+
+    pub async fn stop(&mut self) {
+        if let Some(hb_state) = self.heartbat_state.take() {
+            hb_state.cancellation_token.cancel();
+            _ = hb_state.task.await;
+        }
+    }
+}
+async fn heartbeat_task(
+    url: &str,
+    client: &Client,
+    notes: &HashMap<String, ManagedNote>,
+) -> Result<()> {
+    let notes = notes
+        .iter()
+        .map(|n| HeartbeatNoteDto {
+            name: n.1.note.name.clone(),
+            state: n.1.note.state.clone(),
+        })
+        .collect();
+    let heartbeat = HeartbeatDto {
+        name: "me".to_string(),
+        notes,
+    };
+    let response = client
+        .post(url)
+        .json(&heartbeat)
+        // .header("Content-Type", "application/json")
+        .send()
+        .await?;
+    debug!("Heartbeat response: {:?}", response);
+    Ok(())
+}
+
+==== ./orchestra/src/principal/note_process.rs ====
+
+use std::{
+    collections::{HashMap, HashSet},
+    ops::DerefMut,
+    process::Command,
+    sync::Arc,
+};
+
+use shared_child::SharedChild;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tracing::{debug, error, info, instrument, warn, Instrument};
+
+use crate::maestro::models::{DesiredState, Note, NoteState, RestartPolicy};
+
+use super::AppState;
+
+#[derive(Debug)]
+pub struct ManagedNote {
+    pub note: Note,
+    pub child: Option<Arc<SharedChild>>,
+}
+
+#[instrument]
+pub async fn start_note(
+    notes: &mut HashMap<String, ManagedNote>,
+    mut note: Note,
+    exit_tx: UnboundedSender<(String, i32)>,
+) {
+    if !matches!(note.desired_state, DesiredState::Run) {
+        warn!("Tried to start a process that does not have a desired state of Run");
+        return;
+    }
+    if let Some(proc_entry) = notes.get(&note.name) {
+        if matches!(proc_entry.note.state, NoteState::Running) {
+            warn!("Process is already running. Ignoring start.");
+            return;
+        }
+
+        // if note is not running, there should be no child
+        if proc_entry.child.is_some() {
+            error!("ManagedNote has a child even though it is not running.");
+            return;
+        }
+    }
+
+    debug!("Starting process");
+
+    let mut command = Command::new(note.command.clone());
+    command.args(note.args.clone()).envs(note.env.clone());
+
+    match SharedChild::spawn(&mut command) {
+        Ok(child) => {
+            note.state = NoteState::Running;
+            let child = Arc::new(child);
+            let exit_name = note.name.clone();
+            {
+                let child = Arc::clone(&child);
+                let managed_note = ManagedNote {
+                    note,
+                    child: Some(child),
+                };
+                notes
+                    .entry(managed_note.note.name.clone())
+                    .insert_entry(managed_note);
+            }
+            let child = Arc::clone(&child);
+            _ = std::thread::spawn(move || {
+                let status = child.wait();
+                let code = status
+                    .map(|exit_status| exit_status.code().unwrap_or(-1))
+                    .unwrap_or(-1);
+                if let Err(e) = exit_tx.send((exit_name, code)) {
+                    error!("Failed to send process exit notification: {}", e);
+                }
+            })
+            .in_current_span();
+        }
+        Err(e) => {
+            warn!(command = ?command, "Failed to spawn command: {}", e);
+            note.state = NoteState::Terminated;
+            let managed_note = ManagedNote { note, child: None };
+            notes
+                .entry(managed_note.note.name.clone())
+                .insert_entry(managed_note);
+        }
+    }
+}
+
+#[instrument]
+pub async fn stop_note(notes: &mut HashMap<String, ManagedNote>, name: &str) {
+    match notes.get_mut(name) {
+        Some(managed_proc) => {
+            managed_proc.note.state = NoteState::Terminated;
+            if let Some(child) = &managed_proc.child {
+                debug!("Killing process: {}", name);
+                // Mark it as Killed by command
+                let _ = child.kill();
+            } else {
+                warn!("Process {} has no active child to kill.", name);
+            }
+        }
+        None => {
+            warn!("Cannot find note");
+        }
+    }
+}
+
+pub async fn synchronize_state(
+    state: &mut AppState,
+    override_notes: Vec<Note>,
+    exit_tx: UnboundedSender<(String, i32)>,
+) {
+    let mut notes = state.notes.lock().await;
+
+    // Create a set of names from the override list for quick lookups
+    let override_names: HashSet<String> = override_notes
+        .iter()
+        .map(|note| note.name.clone())
+        .collect();
+
+    // Remove notes from the current state that are not in the override list
+    notes.retain(|name, managed_note| {
+        if !override_names.contains(name) {
+            info!("Removing note '{}' not present in the override list.", name);
+            if let Some(child) = &managed_note.child {
+                info!("Stopping child process for note '{}'.", name);
+                let _ = child.kill();
+            }
+            false // Remove this entry
+        } else {
+            true // Keep this entry
+        }
+    });
+
+    // Add or update notes from the override list
+    for override_note in override_notes {
+        match notes.get_mut(&override_note.name) {
+            Some(managed_note) => {
+                // Update the note if it exists
+                info!("Updating existing note '{}'.", override_note.name);
+                managed_note.note = override_note.clone();
+
+                // Handle running state if necessary
+                if !matches!(managed_note.note.desired_state, DesiredState::Run) {
+                    if let Some(child) = &managed_note.child {
+                        info!(
+                            "Stopping child process for note '{}' due to updated desired state.",
+                            override_note.name
+                        );
+                        let _ = child.kill();
+                        managed_note.child = None;
+                    }
+                }
+            }
+            None => {
+                // Add the new note
+                info!("Adding new note '{}'.", override_note.name);
+                if matches!(override_note.desired_state, DesiredState::Run) {
+                    start_note(&mut notes, override_note, exit_tx.clone()).await;
+                }
+                // let managed_note = ManagedNote {
+                //     note: override_note.clone(),
+                //     child: None,
+                // };
+                // notes.insert(override_note.name.clone(), managed_note);
+            }
+        }
+    }
+}
+
+==== ./orchestra/src/bin/principal.rs ====
+
+use anyhow::Result;
+use orchestra::{
+    maestro::models::{DesiredState, Note, NoteState},
+    principal::{
+        note_process::{start_note, stop_note, synchronize_state},
+        process_exits_actor::ProcessExitsActor,
+        AppState, HeartbeatActor,
+    },
+};
+use reqwest_eventsource::EventSource;
+use tokio::sync::mpsc::unbounded_channel;
+use tokio_stream::StreamExt;
+use tracing::{debug, info, warn};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let mut state = AppState::default();
+    let (process_exit_tx, process_exit_rx) = unbounded_channel();
+
+    let mut process_exits_actor = ProcessExitsActor::new();
+    process_exits_actor.start(state.clone(), process_exit_tx.clone(), process_exit_rx);
+
+    let mut hb_actor = HeartbeatActor::new("http://localhost:3000/api/v1/principals".to_string());
+    hb_actor.start(state.clone());
+
+    // Replace with your target host
+    let host = "http://localhost:3000";
+    let sse_url = format!("{}/api/v1/notes?watch=true&field_selector=host=me", host);
+
+    println!("Subscribing to SSE from: {}", sse_url);
+
+    let mut es = EventSource::get(sse_url);
+
+    // We'll wrap our SSE loop in a `tokio::select!` to allow early exit on Ctrl-C.
+    tokio::select! {
+        // SSE subscription loop
+        _ = async {
+            while let Some(item) = es.next().await {
+                match item {
+                    Ok(reqwest_eventsource::Event::Open) => info!("Connection Opened!"),
+                    Ok(reqwest_eventsource::Event::Message(message)) => match message.event.as_str() {
+                        "list" => {
+                            debug!(notes = message.data, "Got list event");
+                            // data is a list of notes
+                            let notes: Vec<Note> = serde_json::from_str(&message.data)
+                                .expect("Should have received valid list of notes");
+                            synchronize_state(&mut state, notes, process_exit_tx.clone()).await;
+                        }
+                        "added" => {
+                            debug!("Got list event");
+                            let new_note = serde_json::from_str(&message.data)
+                                .expect("Should receive valid note from added event");
+                            let mut current_notes = state.notes.lock().await;
+                            start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
+                        }
+                        "modified" => {
+                            debug!("Got list event");
+                            let new_note: Note = serde_json::from_str(&message.data)
+                                .expect("Should receive valid note from modified event");
+                            let mut current_notes = state.notes.lock().await;
+                            if let Some(managed_note) = current_notes.get(&new_note.name) {
+                                if matches!(new_note.desired_state, DesiredState::Run)
+                                    && !matches!(managed_note.note.state, NoteState::Running)
+                                {
+                                    start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
+                                }
+                                // if the desired state is stop, stop process
+                                // if running and set state to terminated
+                                else if matches!(new_note.desired_state, DesiredState::Stop)
+                                {
+                                    stop_note(&mut current_notes, &new_note.name).await;
+                                }
+                            } else {
+                                warn!("Got modified event for untracked note");
+                            }
+                        }
+                        "deleted" => {
+                            debug!("Got list event");
+                            let new_note: Note = serde_json::from_str(&message.data)
+                                .expect("Deleted event should give valid note");
+                            let mut current_notes = state.notes.lock().await;
+                            if current_notes.get(&new_note.name).is_some() {
+                                stop_note(&mut current_notes, &new_note.name).await;
+                            }
+                            current_notes.remove(&new_note.name);
+                        }
+                        _ => {
+                            warn!("Unexpected message: {:#?}", message);
+                        }
+                    },
+                    Err(err) => {
+                        es.close();
+                        panic!("Event source error: {:#?}", err)
+                    }
+                }
+            }
+        } => {},
+
+        // Exit on Ctrl-C
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received Ctrl-C signal, initiating shutdown.");
+        }
+    }
+
+    // Either the SSE stream ended or we caught Ctrl-C.
+    // Proceed with your shutdown logic.
+
+    println!("Disconnecting from SSE endpoint.");
+    println!("Stopping heartbeats");
+    hb_actor.stop().await;
+
+    // Stop the process-exits actor last, or after you kill any processes
+    // you *haven't* already killed.
+    println!("Stopping process exits actor");
+    process_exits_actor.stop().await;
+
+    println!("Clean shutdown complete.");
+    Ok(())
+}
+
+==== ./orchestra/src/bin/maestro.rs ====
+
+use orchestra::maestro::maestro;
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+    let server = maestro();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, server).await.unwrap();
+}
+
+==== ./orchestra/src/maestro/repositories/symphony.rs ====
+
+use crate::maestro::models::{DesiredState, SharedStore, Symphony};
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait SymphonyRepository: Send + Sync {
+    async fn get_all_symphonies(&self) -> Vec<Symphony>;
+    async fn get_symphony(&self, name: &str) -> Option<Symphony>;
+    async fn add_symphony(&self, symphony: Symphony);
+    async fn stop_symphony(&self, name: &str) -> bool;
+    async fn remove_symphony(&self, name: &str) -> bool;
+    async fn start_symphony(&self, name: &str) -> bool;
+    async fn update_symphony(&self, symphony: Symphony) -> bool;
+}
+
+pub struct InMemorySymphonyRepository {
+    store: SharedStore,
+}
+
+impl InMemorySymphonyRepository {
+    pub fn new(store: SharedStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl SymphonyRepository for InMemorySymphonyRepository {
+    async fn get_all_symphonies(&self) -> Vec<Symphony> {
+        self.store.lock().await.get_all_symphonies()
+    }
+    async fn get_symphony(&self, name: &str) -> Option<Symphony> {
+        self.store.lock().await.get_symphony(name)
+    }
+
+    async fn add_symphony(&self, symphony: Symphony) {
+        self.store.lock().await.add_symphony(symphony)
+    }
+
+    async fn start_symphony(&self, name: &str) -> bool {
+        let mut store = self.store.lock().await;
+        let Some(mut symphony) = store.get_symphony(name) else {
+            return false;
+        };
+
+        symphony.desired_state = DesiredState::Run;
+        store.update_symphony(symphony).is_ok()
+    }
+
+    async fn stop_symphony(&self, name: &str) -> bool {
+        let mut store = self.store.lock().await;
+        let Some(mut symphony) = store.get_symphony(name) else {
+            return false;
+        };
+
+        symphony.desired_state = DesiredState::Stop;
+        store.update_symphony(symphony).is_ok()
+    }
+
+    async fn remove_symphony(&self, name: &str) -> bool {
+        self.store.lock().await.remove_symphony(name);
+        true
+    }
+
+    async fn update_symphony(&self, symphony: Symphony) -> bool {
+        self.store.lock().await.update_symphony(symphony).is_ok()
+    }
+}
+
+==== ./orchestra/src/maestro/repositories/principal.rs ====
+
+use crate::maestro::models::{Principal, SharedStore};
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait PrincipalRepository: Send + Sync {
+    async fn get_all_principals(&self) -> Vec<Principal>;
+    async fn upsert_principal(&self, principal: Principal);
+}
+
+pub struct InMemoryPrincipalRepository {
+    store: SharedStore,
+}
+
+impl InMemoryPrincipalRepository {
+    pub fn new(store: SharedStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl PrincipalRepository for InMemoryPrincipalRepository {
+    async fn get_all_principals(&self) -> Vec<Principal> {
+        let store = self.store.lock().await;
+        store.get_all_principals()
+    }
+
+    async fn upsert_principal(&self, principal: Principal) {
+        let mut store = self.store.lock().await;
+
+        // check if principal exists
+        if store.get_principal(&principal.host()).is_some() {
+            // if it exists, update
+            _ = store.update_principal(principal);
+        } else {
+            store.add_principal(principal);
+        }
+    }
+}
+
+==== ./orchestra/src/maestro/repositories/note.rs ====
+
+use crate::maestro::models::{DesiredState, Note, SharedStore};
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait NoteRepository: Send + Sync {
+    async fn get_all_notes(&self) -> Vec<Note>;
+    async fn get_note(&self, name: &str) -> Option<Note>;
+    async fn add_note(&self, note: Note);
+    async fn update_note(&self, note: Note);
+    async fn stop_note(&self, name: &str) -> bool;
+    async fn start_note(&self, name: &str) -> bool;
+    async fn remove_note(&self, name: &str) -> bool;
+}
+
+pub struct InMemoryNoteRepository {
+    store: SharedStore,
+}
+
+impl InMemoryNoteRepository {
+    pub fn new(store: SharedStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl NoteRepository for InMemoryNoteRepository {
+    async fn get_all_notes(&self) -> Vec<Note> {
+        self.store.lock().await.get_all_notes()
+    }
+    async fn get_note(&self, name: &str) -> Option<Note> {
+        self.store.lock().await.get_note(name)
+    }
+
+    async fn add_note(&self, note: Note) {
+        self.store.lock().await.add_note(note)
+    }
+    async fn update_note(&self, note: Note) {
+        self.store
+            .lock()
+            .await
+            .update_note(note)
+            .expect("Should only be updating notes that exist");
+    }
+
+    async fn stop_note(&self, name: &str) -> bool {
+        let mut store = self.store.lock().await;
+        let Some(mut note) = store.get_note(name) else {
+            return false;
+        };
+
+        note.desired_state = DesiredState::Stop;
+        store.update_note(note).is_ok()
+    }
+    async fn start_note(&self, name: &str) -> bool {
+        let mut store = self.store.lock().await;
+        let Some(mut note) = store.get_note(name) else {
+            return false;
+        };
+
+        note.desired_state = DesiredState::Run;
+        store.update_note(note).is_ok()
+    }
+    async fn remove_note(&self, name: &str) -> bool {
+        self.store.lock().await.remove_note(name);
+        true
+    }
+}
+
+==== ./orchestra/src/maestro/repositories/mod.rs ====
+
+pub mod note;
+pub mod principal;
+pub mod symphony;
+
+==== ./orchestra/src/maestro/models/mod.rs ====
+
+use std::{collections::HashMap, sync::Arc};
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use watcher::Watchable;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum PrincipalState {
+    Ready,
+    NotReady,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum NoteState {
+    Pending,
+    Running,
+    // if the process exits by iteslf with a zero exit code
+    Completed,
+    //if a process exits by itself with a non-zero exit code
+    Crashed,
+    // if a user terminates a process
+    Terminated,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum DesiredState {
+    Run,
+    Stop,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum RestartPolicy {
+    Never,
+    OnFailure,
+    Always,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Note {
+    pub name: String,
+    pub description: String,
+    pub host: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub restart_policy: RestartPolicy,
+    pub symphony: String,
+    pub state: NoteState,
+    pub desired_state: DesiredState,
+}
+
+impl Watchable for Note {
+    fn get_field_value(&self, field_name: &str) -> Option<String> {
+        match field_name {
+            "name" => Some(self.name.clone()),
+            "description" => Some(self.description.clone()),
+            "host" => Some(self.host.clone()),
+            "command" => Some(self.command.clone()),
+            "symphony" => Some(self.symphony.clone()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Symphony {
+    pub name: String,
+    pub notes: Vec<String>,
+    pub desired_state: DesiredState,
+}
+
+impl Symphony {
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Returns a list of note names that are associated with this symphony.
+    /// Use the repository to additionally search for the associated notes
+    pub fn notes(&self) -> Vec<String> {
+        self.notes.clone()
+    }
+
+    pub fn desired_state(&self) -> DesiredState {
+        self.desired_state.clone()
+    }
+}
+
+impl Watchable for Symphony {
+    fn get_field_value(&self, field_name: &str) -> Option<String> {
+        match field_name {
+            "name" => Some(self.name.clone()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Principal {
+    pub host: String,
+    pub capabilities: Vec<String>,
+    pub state: PrincipalState,
+    pub last_updated: u64,
+}
+
+impl Principal {
+    pub fn host(&self) -> String {
+        self.host.clone()
+    }
+
+    pub fn capabilities(&self) -> Vec<String> {
+        self.capabilities.clone()
+    }
+
+    pub fn state(&self) -> PrincipalState {
+        self.state.clone()
+    }
+
+    pub fn last_updated(&self) -> u64 {
+        self.last_updated
+    }
+}
+
+impl Watchable for Principal {
+    fn get_field_value(&self, field_name: &str) -> Option<String> {
+        match field_name {
+            "host" => Some(self.host.clone()),
+            _ => None,
+        }
+    }
+}
+// Define an in-memory store struct with HashMaps to store each entity type
+#[derive(Default)]
+pub struct InMemoryStore {
+    notes: HashMap<String, Note>,
+    symphonies: HashMap<String, Symphony>,
+    principals: HashMap<String, Principal>,
+}
+
+impl InMemoryStore {
+    // Initialize a new store
+    pub fn new() -> Self {
+        InMemoryStore {
+            notes: HashMap::new(),
+            symphonies: HashMap::new(),
+            principals: HashMap::new(),
+        }
+    }
+
+    // Methods to add data to the store
+    pub fn add_note(&mut self, note: Note) {
+        self.notes.insert(note.name.clone(), note);
+    }
+
+    pub fn add_symphony(&mut self, symphony: Symphony) {
+        self.symphonies.insert(symphony.name.clone(), symphony);
+    }
+
+    pub fn add_principal(&mut self, principal: Principal) {
+        self.principals.insert(principal.host.clone(), principal);
+    }
+
+    // Methods to retrieve data
+    pub fn get_note(&self, name: &str) -> Option<Note> {
+        self.notes.get(name).cloned()
+    }
+
+    pub fn get_symphony(&self, name: &str) -> Option<Symphony> {
+        self.symphonies.get(name).cloned()
+    }
+
+    pub fn get_principal(&self, host: &str) -> Option<Principal> {
+        self.principals.get(host).cloned()
+    }
+
+    pub fn get_all_notes(&self) -> Vec<Note> {
+        self.notes.iter().map(|n| n.1.clone()).collect()
+    }
+
+    pub fn get_all_symphonies(&self) -> Vec<Symphony> {
+        self.symphonies.iter().map(|n| n.1.clone()).collect()
+    }
+
+    pub fn get_all_principals(&self) -> Vec<Principal> {
+        self.principals.iter().map(|n| n.1.clone()).collect()
+    }
+
+    // Methods to update data (example for notes)
+    pub fn update_note_state(&mut self, name: &str, new_state: NoteState) {
+        if let Some(note) = self.notes.get_mut(name) {
+            note.state = new_state;
+        }
+    }
+
+    // Update or replace a Note completely
+    pub fn update_note(&mut self, updated_note: Note) -> Result<(), String> {
+        let name = &updated_note.name;
+        if self.notes.contains_key(name) {
+            self.notes.insert(name.clone(), updated_note);
+            Ok(())
+        } else {
+            Err(format!("Note '{}' not found", name))
+        }
+    }
+
+    // Update or replace a Symphony completely
+    pub fn update_symphony(&mut self, updated_symphony: Symphony) -> Result<(), String> {
+        let name = &updated_symphony.name;
+        if self.symphonies.contains_key(name) {
+            self.symphonies.insert(name.clone(), updated_symphony);
+            Ok(())
+        } else {
+            Err(format!("Symphony '{}' not found", name))
+        }
+    }
+
+    // Update or replace a Principal completely
+    pub fn update_principal(&mut self, updated_principal: Principal) -> Result<(), String> {
+        let host = &updated_principal.host;
+        if self.principals.contains_key(host) {
+            self.principals.insert(host.clone(), updated_principal);
+            Ok(())
+        } else {
+            Err(format!("Principal '{}' not found", host))
+        }
+    }
+
+    // Methods to remove data if needed
+    pub fn remove_note(&mut self, name: &str) {
+        self.notes.remove(name);
+    }
+
+    pub fn remove_symphony(&mut self, name: &str) {
+        self.symphonies.remove(name);
+    }
+
+    pub fn remove_principal(&mut self, host: &str) {
+        self.principals.remove(host);
+    }
+}
+
+// To ensure safe concurrent access, wrap the InMemoryStore in an Arc<Mutex<>>
+pub type SharedStore = Arc<Mutex<InMemoryStore>>;
+
+pub trait SharedStoreExt {
+    fn new_shared() -> Self;
+}
+
+impl SharedStoreExt for SharedStore {
+    fn new_shared() -> Self {
+        Arc::new(Mutex::new(InMemoryStore::new()))
+    }
+}
+
+==== ./orchestra/src/maestro/mod.rs ====
+
+pub mod models;
+pub mod repositories;
+pub mod routes;
+
+use std::sync::Arc;
+
+use axum::{extract::State, routing::get, Router};
+use models::{Note, Principal, SharedStore, SharedStoreExt, Symphony};
+use repositories::{
+    note::{InMemoryNoteRepository, NoteRepository},
+    principal::{InMemoryPrincipalRepository, PrincipalRepository},
+    symphony::{InMemorySymphonyRepository, SymphonyRepository},
+};
+use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
+use watcher::{Event, FieldSelector, Watcher};
+
+pub struct AppState {
+    pub note_repository: Mutex<Box<dyn NoteRepository>>,
+    pub symphony_repository: Mutex<Box<dyn SymphonyRepository>>,
+    pub principal_repository: Mutex<Box<dyn PrincipalRepository>>,
+    pub watch_manager: Mutex<WatchManager>,
+}
+
+impl AppState {
+    pub fn new(
+        note_repository: Box<dyn NoteRepository>,
+        symphony_repository: Box<dyn SymphonyRepository>,
+        principal_repository: Box<dyn PrincipalRepository>,
+        watch_manager: WatchManager,
+    ) -> Self {
+        Self {
+            note_repository: Mutex::new(note_repository),
+            symphony_repository: Mutex::new(symphony_repository),
+            principal_repository: Mutex::new(principal_repository),
+            watch_manager: Mutex::new(watch_manager),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SampleState {}
+
+pub async fn run_maestro() {
+    let app = maestro();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+pub fn maestro() -> Router {
+    let data_store = SharedStore::new_shared();
+    let note_repository = Box::new(InMemoryNoteRepository::new(data_store.clone()));
+    let symphony_repository = Box::new(InMemorySymphonyRepository::new(data_store.clone()));
+    let principal_repository = Box::new(InMemoryPrincipalRepository::new(data_store.clone()));
+    let watch_manager = WatchManager::default();
+    let app_state = Arc::new(AppState::new(
+        note_repository,
+        symphony_repository,
+        principal_repository,
+        watch_manager,
+    ));
+    Router::new()
+        .route(
+            "/",
+            get(|_: State<Arc<AppState>>| async move { "Hello World!" }),
+        )
+        .nest("/api/v1/notes", routes::notes::routes())
+        .nest("/api/v1/symphonies", routes::symphonies::routes())
+        .nest("/api/v1/principals", routes::principals::routes())
+        .with_state(app_state)
+}
+
+pub struct WatchManager {
+    note_watcher: Watcher<Note>,
+    symphony_watcher: Watcher<Symphony>,
+    principal_watcher: Watcher<Principal>,
+}
+
+impl WatchManager {
+    pub fn new() -> Self {
+        Self {
+            note_watcher: Watcher::new(),
+            symphony_watcher: Watcher::new(),
+            principal_watcher: Watcher::new(),
+        }
+    }
+
+    pub fn notify_note(&mut self, event: Event<Note>) {
+        self.note_watcher.notify(event)
+    }
+
+    pub fn notify_symphony(&mut self, event: Event<Symphony>) {
+        self.symphony_watcher.notify(event)
+    }
+
+    pub fn notify_principal(&mut self, event: Event<Principal>) {
+        self.principal_watcher.notify(event)
+    }
+
+    pub fn subscribe_note(
+        &mut self,
+        field_selector: FieldSelector,
+    ) -> UnboundedReceiver<Arc<Event<Note>>> {
+        self.note_watcher.subscribe(field_selector)
+    }
+
+    pub fn subscribe_symphony(
+        &mut self,
+        field_selector: FieldSelector,
+    ) -> UnboundedReceiver<Arc<Event<Symphony>>> {
+        self.symphony_watcher.subscribe(field_selector)
+    }
+
+    pub fn subscribe_principal(
+        &mut self,
+        field_selector: FieldSelector,
+    ) -> UnboundedReceiver<Arc<Event<Principal>>> {
+        self.principal_watcher.subscribe(field_selector)
+    }
+}
+
+impl Default for WatchManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use models::{DesiredState, NoteState, RestartPolicy};
+    use watcher::EventType;
+
+    use super::*;
+    #[tokio::test]
+    async fn test_notes_no_selector() {
+        let mut watch_manager = WatchManager::default();
+        let field_selector = FieldSelector::default();
+        let mut receiver = watch_manager.subscribe_note(field_selector);
+        let sample_note = Note {
+            name: "Sample note".to_string(),
+            description: "Sample desc".to_string(),
+            host: "host".to_string(),
+            command: "command".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            restart_policy: RestartPolicy::Never,
+            symphony: "sample".to_string(),
+            state: NoteState::Pending,
+            desired_state: DesiredState::Run,
+        };
+
+        let sample_event = Event {
+            event_type: EventType::Added,
+            resource: sample_note,
+        };
+
+        watch_manager.notify_note(sample_event.clone());
+        let e = receiver.try_recv().expect("Should receive an event");
+        assert!(sample_event.event_type.to_string() == e.event_type.to_string());
+    }
+}
+
+==== ./orchestra/src/maestro/routes/notes.rs ====
+
+use std::{sync::Arc, time::Duration};
+
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{
+        sse::{Event, KeepAlive},
+        IntoResponse, Response, Sse,
+    },
+    routing::{get, patch},
+    Json, Router,
+};
+
+use futures::{stream, StreamExt};
+use serde::Deserialize;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use watcher::{EventType, FieldSelector};
+
+use crate::maestro::{
+    models::{DesiredState, Note},
+    AppState,
+};
+
+#[derive(Deserialize)]
+pub struct GetNotesQueryParams {
+    watch: Option<bool>,
+    field_selector: Option<String>,
+}
+
+pub async fn get_notes(
+    State(app_state): State<Arc<AppState>>,
+    Query(params): Query<GetNotesQueryParams>,
+) -> Response {
+    // Retrieve the initial list of notes
+    let notes = app_state.note_repository.lock().await.get_all_notes().await;
+
+    // Unified response and error handling for non-watching requests
+    if !params.watch.unwrap_or(false) {
+        return Json(notes).into_response();
+    }
+
+    // Create the initial SSE event with the list of notes to populate the client's cache
+    let initial_event = Event::default()
+        .event("list")
+        .data(serde_json::to_string(&notes).unwrap_or_else(|_| "[]".to_string()));
+
+    // Watching for updates
+    let field_selector =
+        FieldSelector::from_query(&params.field_selector.unwrap_or("".to_string())); // Customize if needed
+    let receiver = app_state
+        .watch_manager
+        .lock()
+        .await
+        .subscribe_note(field_selector);
+
+    // Stream of update events
+    let update_stream = UnboundedReceiverStream::new(receiver).map(|event| {
+        let note_event = event.as_ref().clone();
+        serde_json::to_string(&note_event.resource).map(|data| {
+            Event::default()
+                .event(event.event_type.to_string())
+                .data(data)
+        })
+    });
+
+    // Combine the initial event with the update stream
+    let combined_stream = stream::once(async { Ok::<_, _>(initial_event) }).chain(update_stream);
+
+    Sse::new(combined_stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(1))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
+pub async fn get_note_by_name(
+    State(app_state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<Note>, StatusCode> {
+    match app_state.note_repository.lock().await.get_note(&name).await {
+        Some(note) => Ok(Json(note)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+pub async fn start_note(
+    State(app_state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> StatusCode {
+    let repository = app_state.note_repository.lock().await;
+    // we can only restart a note if its desired state is run (i.e. it has not
+    // been terminated by a user yet.)
+
+    let existing_note = match repository.get_note(&name).await {
+        Some(note) => note,
+        None => return StatusCode::NOT_FOUND,
+    };
+
+    // can't start a stopped process
+    if matches!(existing_note.desired_state, DesiredState::Stop) {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    match repository.start_note(&name).await {
+        true => {
+            let note = repository.get_note(&name).await.unwrap();
+            let event = watcher::Event {
+                event_type: EventType::Modified,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+            StatusCode::OK
+        }
+        false => StatusCode::NOT_FOUND,
+    }
+}
+
+pub async fn stop_note(
+    State(app_state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> StatusCode {
+    let repository = app_state.note_repository.lock().await;
+    match repository.stop_note(&name).await {
+        true => {
+            let note = repository.get_note(&name).await.unwrap();
+            let event = watcher::Event {
+                event_type: EventType::Modified,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+
+            StatusCode::OK
+        }
+        false => StatusCode::NOT_FOUND,
+    }
+}
+
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", get(get_notes))
+        .route("/{name}", get(get_note_by_name))
+        .route("/{name}/start", patch(start_note))
+        .route("/{name}/stop", patch(stop_note))
+}
+
+==== ./orchestra/src/maestro/routes/symphonies.rs ====
+
+use std::{collections::HashMap, sync::Arc};
+
+use axum::{
+    debug_handler,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use watcher::{Event, EventType};
+
+use crate::maestro::{
+    models::{DesiredState, Note, NoteState, RestartPolicy, Symphony},
+    AppState,
+};
+
+// step 1: start a symphony and stop a symphony
+
+/// Create and start a Symphony
+pub async fn start_symphony(
+    State(app_state): State<Arc<AppState>>,
+    Json(symphony_dto): Json<SymphonyDto>,
+) {
+    let symphony = symphony_dto.to_data_obj();
+    let notes = symphony_dto
+        .notes
+        .iter()
+        .map(|n| n.to_data_obj(&symphony.name))
+        .collect::<Vec<Note>>();
+    // Create and start symphony
+    {
+        let symphony_repo = app_state.symphony_repository.lock().await;
+        let symphony_name = symphony.name();
+        symphony_repo.add_symphony(symphony).await;
+        symphony_repo.start_symphony(&symphony_name).await;
+    }
+    // Create and start notes in the symphony
+    {
+        let notes_repo = app_state.note_repository.lock().await;
+        for note in notes.clone() {
+            let note_name = note.name.clone();
+            notes_repo.add_note(note).await;
+            notes_repo.start_note(&note_name).await;
+        }
+    }
+    let mut wm = app_state.watch_manager.lock().await;
+    for note in notes {
+        wm.notify_note(watcher::Event {
+            event_type: watcher::EventType::Added,
+            resource: note,
+        });
+    }
+}
+
+// Stop a Symphony
+pub async fn stop_symphony(
+    Path(name): Path<String>,
+    State(app_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let symphony_repo = app_state.symphony_repository.lock().await;
+    let notes_repo = app_state.note_repository.lock().await;
+    let symphony = match symphony_repo.get_symphony(&name).await {
+        Some(symphony) => symphony,
+        None => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    for note in symphony.notes() {
+        let success = notes_repo.stop_note(&note).await;
+        if success {
+            let note = notes_repo.get_note(&note).await.unwrap();
+            let event = Event {
+                event_type: EventType::Modified,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+        } else {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    symphony_repo.stop_symphony(&name).await;
+
+    StatusCode::OK
+}
+
+/// Starts an existing symphony
+pub async fn start_symphony_by_id() {}
+
+pub async fn get_notes_for_symphony() {}
+#[debug_handler]
+async fn get_all_symphonies(State(state): State<Arc<AppState>>) -> Json<Vec<SymphonyReturn>> {
+    let s_repo = state.symphony_repository.lock().await;
+    let n_repo = state.note_repository.lock().await;
+    let symphonies = s_repo.get_all_symphonies().await;
+    let mut final_symphonies = Vec::new();
+    for symphony in symphonies {
+        let mut notes = Vec::new();
+        for note in symphony.notes {
+            let note = n_repo.get_note(&note).await.unwrap();
+            notes.push(note);
+        }
+
+        final_symphonies.push(SymphonyReturn {
+            name: symphony.name,
+            notes,
+        });
+    }
+    Json(final_symphonies)
+}
+
+#[derive(Serialize)]
+struct SymphonyReturn {
+    name: String,
+    notes: Vec<Note>,
+}
+
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/{symphony_name}/notes", get(get_notes_for_symphony))
+        .route("/", post(start_symphony))
+        .route("/", get(get_all_symphonies))
+        .route("/{name}/stop", post(stop_symphony))
+}
+
+#[derive(Clone, Deserialize, Debug)]
+pub struct NoteDto {
+    pub name: String,
+    pub description: String,
+    pub host: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub restart_policy: RestartPolicy,
+}
+
+impl NoteDto {
+    pub fn to_data_obj(&self, symphony_name: &str) -> Note {
+        Note {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            host: self.host.clone(),
+            env: self.env.clone(),
+            command: self.command.clone(),
+            args: self.args.clone(),
+            restart_policy: self.restart_policy.clone(),
+            state: NoteState::Pending,
+            symphony: symphony_name.to_string(),
+            desired_state: DesiredState::Run,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct SymphonyDto {
+    pub name: String,
+    pub notes: Vec<NoteDto>,
+}
+
+impl SymphonyDto {
+    pub fn to_data_obj(&self) -> Symphony {
+        let notes = self.notes.iter().map(|n| n.name.clone()).collect();
+        Symphony {
+            notes,
+            name: self.name.clone(),
+            desired_state: DesiredState::Run,
+        }
+    }
+}
+
+==== ./orchestra/src/maestro/routes/principals.rs ====
+
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
+use watcher::EventType;
+
+use crate::maestro::{
+    models::{DesiredState, NoteState, Principal, PrincipalState},
+    repositories::symphony,
+    AppState,
+};
+
+async fn principal_heartbeat(
+    State(app_state): State<Arc<AppState>>,
+    Json(heartbeat): Json<HeartbeatDto>,
+) {
+    info!("got heartbeat: {:?}", heartbeat);
+    let principal_repo = app_state.principal_repository.lock().await;
+    let note_repo = app_state.note_repository.lock().await;
+    let symphony_repo = app_state.symphony_repository.lock().await;
+
+    for note in heartbeat.notes {
+        // remove terminated notes from state
+        if matches!(note.state, NoteState::Terminated) {
+            // collect data
+            let note = match note_repo.get_note(&note.name).await {
+                Some(note) => note,
+                None => continue,
+            };
+            let symphony_name = note.symphony.clone();
+            let mut symphony = symphony_repo.get_symphony(&symphony_name).await.unwrap();
+
+            // update symphony
+            symphony.notes.retain(|n| *n != note.name);
+            let should_remove = matches!(symphony.desired_state(), DesiredState::Stop)
+                && symphony.notes().is_empty();
+            _ = symphony_repo.update_symphony(symphony).await;
+            //update note
+            note_repo.remove_note(&note.name).await;
+            let event = watcher::Event {
+                event_type: EventType::Deleted,
+                resource: note,
+            };
+            app_state.watch_manager.lock().await.notify_note(event);
+
+            // remove symphony if stop requested and all notes gone
+            if should_remove {
+                symphony_repo.remove_symphony(&symphony_name).await;
+            }
+        } else {
+            let mut note_update = note_repo
+                .get_note(&note.name)
+                .await
+                .expect("Should get valid note from principal heartbeat");
+
+            note_update.state = note.state;
+            note_repo.update_note(note_update).await;
+        }
+    }
+
+    let principal = Principal {
+        host: heartbeat.name,
+        capabilities: Vec::new(),
+        state: PrincipalState::Ready,
+        last_updated: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Should be able to get a valid duration since unix epoch")
+            .as_secs(),
+    };
+
+    principal_repo.upsert_principal(principal).await;
+}
+
+async fn get_principals(State(app_state): State<Arc<AppState>>) -> Json<Vec<Principal>> {
+    let principal_repo = app_state.principal_repository.lock().await;
+    let principals = principal_repo.get_all_principals().await;
+    Json(principals)
+}
+
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", post(principal_heartbeat))
+        .route("/", get(get_principals))
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct HeartbeatDto {
+    pub name: String,
+    pub notes: Vec<HeartbeatNoteDto>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct HeartbeatNoteDto {
+    pub name: String,
+    pub state: NoteState,
+}
+
+==== ./orchestra/src/maestro/routes/mod.rs ====
+
+pub mod notes;
+pub mod principals;
+pub mod symphonies;
+
+==== ./orchestra/src/lib.rs ====
+
+pub mod maestro;
+pub mod principal;
+
+==== ./orchestra/src/main.rs ====
+
+fn main() {
+    println!("Hello, world!");
+}
