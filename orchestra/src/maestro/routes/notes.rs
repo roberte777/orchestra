@@ -17,10 +17,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::debug;
 use watcher::{EventType, FieldSelector};
 
-use crate::maestro::{
-    models::{Note, NoteState},
-    AppState,
-};
+use crate::maestro::{models::Note, AppState};
 
 #[derive(Deserialize)]
 pub struct GetNotesQueryParams {
