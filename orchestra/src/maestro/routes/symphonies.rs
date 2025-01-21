@@ -38,7 +38,7 @@ pub async fn start_symphony(
             return;
         }
         // Create and start symphony
-        symphony_repo.add_symphony(symphony).await;
+        symphony_repo.add_symphony(symphony.clone()).await;
         symphony_repo.start_symphony(&symphony_name).await;
         // Create and start notes in the symphony
         for note in notes.clone() {
@@ -54,6 +54,10 @@ pub async fn start_symphony(
             resource: note,
         });
     }
+    wm.notify_symphony(watcher::Event {
+        event_type: watcher::EventType::Added,
+        resource: symphony,
+    });
 }
 
 // Stop a Symphony
@@ -86,6 +90,12 @@ pub async fn stop_symphony(
     }
 
     symphony_repo.stop_symphony(&name).await;
+
+    let mut wm = app_state.watch_manager.lock().await;
+    wm.notify_symphony(watcher::Event {
+        event_type: watcher::EventType::Modified,
+        resource: symphony,
+    });
 
     StatusCode::OK
 }
