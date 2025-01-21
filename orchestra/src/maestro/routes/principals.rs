@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::debug;
 use watcher::EventType;
 
 use crate::maestro::{
@@ -21,7 +21,7 @@ async fn principal_heartbeat(
     State(app_state): State<Arc<AppState>>,
     Json(heartbeat): Json<HeartbeatDto>,
 ) {
-    info!("got heartbeat: {:?}", heartbeat);
+    debug!("got heartbeat: {:?}", heartbeat);
     let principal_repo = app_state.principal_repository.lock().await;
     let note_repo = app_state.note_repository.lock().await;
     let symphony_repo = app_state.symphony_repository.lock().await;
