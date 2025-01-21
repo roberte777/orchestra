@@ -16,8 +16,6 @@ use crate::maestro::{
     AppState,
 };
 
-// step 1: start a symphony and stop a symphony
-
 /// Create and start a Symphony
 pub async fn start_symphony(
     State(app_state): State<Arc<AppState>>,
@@ -99,9 +97,6 @@ pub async fn stop_symphony(
 
     StatusCode::OK
 }
-
-/// Starts an existing symphony
-pub async fn start_symphony_by_id() {}
 
 pub async fn get_notes_for_symphony() {}
 #[debug_handler]
