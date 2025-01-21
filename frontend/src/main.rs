@@ -39,13 +39,15 @@ pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<
 
     #[cfg(feature = "frontend")]
     {
-        app = app.route(
-            "/",
-            get(|| async {
-                // Call `serve_embedded` with an empty string
-                serve_embedded(Path("".to_owned())).await
-            }),
-        )
+        app = app
+            .route(
+                "/",
+                get(|| async {
+                    // Call `serve_embedded` with an empty string
+                    serve_embedded(Path("".to_owned())).await
+                }),
+            )
+            .route("/*path", get(|path| async { serve_embedded(Some(path)) }))
     }
 
     let ip: IpAddr = match host {
