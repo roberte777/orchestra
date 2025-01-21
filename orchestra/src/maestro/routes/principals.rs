@@ -59,7 +59,10 @@ async fn principal_heartbeat(
                 .get_note(&note.name)
                 .await
                 .expect("Should get valid note from principal heartbeat");
-
+            // terminating notes can only be updated to terminated
+            if matches!(note_update.state, NoteState::Terminating) {
+                continue;
+            }
             note_update.state = note.state;
             note_repo.update_note(note_update).await;
         }
