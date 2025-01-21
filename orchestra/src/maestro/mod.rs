@@ -127,7 +127,7 @@ impl Default for WatchManager {
 mod tests {
     use std::collections::HashMap;
 
-    use models::{DesiredState, NoteState, RestartPolicy};
+    use models::{NoteState, RestartPolicy};
     use watcher::EventType;
 
     use super::*;
@@ -146,7 +146,6 @@ mod tests {
             restart_policy: RestartPolicy::Never,
             symphony: "sample".to_string(),
             state: NoteState::Pending,
-            desired_state: DesiredState::Run,
         };
 
         let sample_event = Event {

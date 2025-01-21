@@ -1,7 +1,7 @@
 use axum::{routing::get, Router};
 use core::panic;
 use orchestra::maestro::{
-    models::{DesiredState, Note, NoteState, RestartPolicy, SharedStore, SharedStoreExt},
+    models::{Note, NoteState, RestartPolicy, SharedStore, SharedStoreExt},
     repositories::{
         note::InMemoryNoteRepository, principal::InMemoryPrincipalRepository,
         symphony::InMemorySymphonyRepository,
@@ -72,7 +72,6 @@ async fn test_get_notes() {
         restart_policy: RestartPolicy::Never,
         symphony: "sample".to_string(),
         state: NoteState::Pending,
-        desired_state: DesiredState::Run,
     };
 
     let sample_event = Event {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use orchestra::{
-    maestro::models::{DesiredState, Note, NoteState},
+    maestro::models::{Note, NoteState},
     principal::{
         note_process::{start_note, stop_note, synchronize_state},
         process_exits_actor::ProcessExitsActor,
@@ -63,15 +63,10 @@ async fn main() -> Result<()> {
                                 let new_note: Note = serde_json::from_str(&message.data)
                                     .expect("Should receive valid note from modified event");
                                 let mut current_notes = state.notes.lock().await;
-                                if let Some(managed_note) = current_notes.get(&new_note.name) {
-                                    if matches!(new_note.desired_state, DesiredState::Run)
-                                        && !matches!(managed_note.note.state, NoteState::Running)
-                                    {
-                                        start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
-                                    }
+                                if current_notes.get(&new_note.name).is_some() {
                                     // if the desired state is stop, stop process
                                     // if running and set state to terminated
-                                    else if matches!(new_note.desired_state, DesiredState::Stop)
+                                    if matches!(new_note.state, NoteState::Terminating)
                                     {
                                         stop_note(&mut current_notes, &new_note.name).await;
                                     }

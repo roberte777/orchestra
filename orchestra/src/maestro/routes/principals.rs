@@ -13,7 +13,7 @@ use tracing::info;
 use watcher::EventType;
 
 use crate::maestro::{
-    models::{DesiredState, NoteState, Principal, PrincipalState},
+    models::{NoteState, Principal, PrincipalState, SymphonyState},
     AppState,
 };
 
@@ -39,7 +39,7 @@ async fn principal_heartbeat(
 
             // update symphony
             symphony.notes.retain(|n| *n != note.name);
-            let should_remove = matches!(symphony.desired_state(), DesiredState::Stop)
+            let should_remove = matches!(symphony.state(), SymphonyState::Terminating)
                 && symphony.notes().is_empty();
             _ = symphony_repo.update_symphony(symphony).await;
             //update note

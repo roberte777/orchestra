@@ -1,4 +1,4 @@
-use crate::maestro::models::{DesiredState, Note, SharedStore};
+use crate::maestro::models::{Note, NoteState, SharedStore};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -48,7 +48,7 @@ impl NoteRepository for InMemoryNoteRepository {
             return false;
         };
 
-        note.desired_state = DesiredState::Stop;
+        note.state = NoteState::Terminating;
         store.update_note(note).is_ok()
     }
     async fn start_note(&self, name: &str) -> bool {
@@ -57,7 +57,7 @@ impl NoteRepository for InMemoryNoteRepository {
             return false;
         };
 
-        note.desired_state = DesiredState::Run;
+        note.state = NoteState::Pending;
         store.update_note(note).is_ok()
     }
     async fn remove_note(&self, name: &str) -> bool {

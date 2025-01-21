@@ -1,4 +1,4 @@
-use crate::maestro::models::{DesiredState, SharedStore, Symphony};
+use crate::maestro::models::{SharedStore, Symphony, SymphonyState};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -41,7 +41,7 @@ impl SymphonyRepository for InMemorySymphonyRepository {
             return false;
         };
 
-        symphony.desired_state = DesiredState::Run;
+        symphony.state = SymphonyState::Running;
         store.update_symphony(symphony).is_ok()
     }
 
@@ -51,7 +51,7 @@ impl SymphonyRepository for InMemorySymphonyRepository {
             return false;
         };
 
-        symphony.desired_state = DesiredState::Stop;
+        symphony.state = SymphonyState::Terminating;
         store.update_symphony(symphony).is_ok()
     }
 

@@ -20,12 +20,8 @@ pub enum NoteState {
     Crashed,
     // if a user terminates a process
     Terminated,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub enum DesiredState {
-    Run,
-    Stop,
+    // in the process of shutting down
+    Terminating,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -46,7 +42,6 @@ pub struct Note {
     pub restart_policy: RestartPolicy,
     pub symphony: String,
     pub state: NoteState,
-    pub desired_state: DesiredState,
 }
 
 impl Watchable for Note {
@@ -62,11 +57,25 @@ impl Watchable for Note {
     }
 }
 
+// the states a symphony can be in.
+// to it. It moves to terminating while waiting for all notes to be terminated
+// by principals. No new notes can be added
+#[derive(Debug, Clone)]
+pub enum SymphonyState {
+    // A symphony is running as soon as it is in the database and notes can be
+    // added to it.
+    Running,
+    // A symphony moves to the terminating step when the user stops the symphony
+    // and the principal is closing all notes. New notes cannot be added to a
+    // symphony that is terminating
+    Terminating,
+}
+
 #[derive(Clone, Debug)]
 pub struct Symphony {
     pub name: String,
     pub notes: Vec<String>,
-    pub desired_state: DesiredState,
+    pub state: SymphonyState,
 }
 
 impl Symphony {
@@ -80,8 +89,8 @@ impl Symphony {
         self.notes.clone()
     }
 
-    pub fn desired_state(&self) -> DesiredState {
-        self.desired_state.clone()
+    pub fn state(&self) -> &SymphonyState {
+        &self.state
     }
 }
 

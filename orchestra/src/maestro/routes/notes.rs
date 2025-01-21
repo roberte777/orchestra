@@ -18,7 +18,7 @@ use tracing::debug;
 use watcher::{EventType, FieldSelector};
 
 use crate::maestro::{
-    models::{DesiredState, Note},
+    models::{Note, NoteState},
     AppState,
 };
 
@@ -101,7 +101,9 @@ pub async fn start_note(
     };
 
     // can't start a stopped process
-    if matches!(existing_note.desired_state, DesiredState::Stop) {
+    if matches!(existing_note.state, NoteState::Terminating)
+        || matches!(existing_note.state, NoteState::Terminated)
+    {
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 

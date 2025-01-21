@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use watcher::{Event, EventType};
 
 use crate::maestro::{
-    models::{DesiredState, Note, NoteState, RestartPolicy, Symphony},
+    models::{Note, NoteState, RestartPolicy, Symphony, SymphonyState},
     AppState,
 };
 
@@ -68,7 +68,7 @@ pub async fn stop_symphony(
         None => return StatusCode::INTERNAL_SERVER_ERROR,
     };
     // if already stopping, return OK with no work
-    if matches!(symphony.desired_state(), DesiredState::Stop) {
+    if matches!(symphony.state(), SymphonyState::Terminating) {
         return StatusCode::OK;
     }
     for note in symphony.notes() {
@@ -152,7 +152,6 @@ impl NoteDto {
             restart_policy: self.restart_policy.clone(),
             state: NoteState::Pending,
             symphony: symphony_name.to_string(),
-            desired_state: DesiredState::Run,
         }
     }
 }
@@ -169,7 +168,7 @@ impl SymphonyDto {
         Symphony {
             notes,
             name: self.name.clone(),
-            desired_state: DesiredState::Run,
+            state: SymphonyState::Running,
         }
     }
 }

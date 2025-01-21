@@ -8,7 +8,7 @@ use shared_child::SharedChild;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, instrument, warn, Instrument};
 
-use crate::maestro::models::{DesiredState, Note, NoteState};
+use crate::maestro::models::{Note, NoteState};
 
 use super::AppState;
 
@@ -24,8 +24,8 @@ pub async fn start_note(
     mut note: Note,
     exit_tx: UnboundedSender<(String, i32)>,
 ) {
-    if !matches!(note.desired_state, DesiredState::Run) {
-        warn!("Tried to start a process that does not have a desired state of Run");
+    if !matches!(note.state, NoteState::Pending) {
+        warn!("Tried to start a process that is not pending");
         return;
     }
     if let Some(proc_entry) = notes.get(&note.name) {
@@ -103,6 +103,7 @@ pub async fn stop_note(notes: &mut HashMap<String, ManagedNote>, name: &str) {
     }
 }
 
+// This code currently assumes it is only ran on an initial connection to Maestro
 pub async fn synchronize_state(
     state: &mut AppState,
     override_notes: Vec<Note>,
@@ -136,24 +137,29 @@ pub async fn synchronize_state(
             Some(managed_note) => {
                 // Update the note if it exists
                 info!("Updating existing note '{}'.", override_note.name);
-                managed_note.note = override_note.clone();
-
-                // Handle running state if necessary
-                if !matches!(managed_note.note.desired_state, DesiredState::Run) {
-                    if let Some(child) = &managed_note.child {
-                        info!(
+                match override_note.state {
+                    NoteState::Pending | NoteState::Running => {
+                        // start note
+                        error!("This logic isn't finished!");
+                        start_note(&mut notes, override_note, exit_tx.clone()).await;
+                    }
+                    _ => {
+                        //stop note
+                        if let Some(child) = &managed_note.child {
+                            info!(
                             "Stopping child process for note '{}' due to updated desired state.",
                             override_note.name
                         );
-                        let _ = child.kill();
-                        managed_note.child = None;
+                            let _ = child.kill();
+                            managed_note.child = None;
+                        }
                     }
                 }
             }
             None => {
                 // Add the new note
                 info!("Adding new note '{}'.", override_note.name);
-                if matches!(override_note.desired_state, DesiredState::Run) {
+                if matches!(override_note.state, NoteState::Pending | NoteState::Running) {
                     start_note(&mut notes, override_note, exit_tx.clone()).await;
                 }
             }
