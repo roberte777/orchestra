@@ -1,5 +1,3 @@
-use std::ops::DerefMut;
-
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
@@ -35,10 +33,6 @@ impl ProcessExitsActor {
 
     /// Start the background task that listens on `rx` for `(proc_name, exit_code)` messages,
     /// and updates the internal `AppState` accordingly.
-    ///
-    /// - `state`: The shared `AppState`
-    /// - `exit_tx`: For re-sending `(proc_name, exit_code)` if we restart
-    /// - `exit_rx`: The channel from which we receive `(proc_name, exit_code)` events
     ///
     /// If the background task is already running, this does nothing.
     pub fn start(
@@ -117,7 +111,6 @@ impl ProcessExitsActor {
                         // If we need to restart, we re-acquire the note and start it
                         if restart_process {
                             let note = {
-                                let processes = state.notes.lock().await;
                                 if let Some(proc_entry) = processes.get(&proc_name) {
                                     proc_entry.note.clone()
                                 } else {
@@ -128,7 +121,7 @@ impl ProcessExitsActor {
 
                             // Re-start note
                             start_note(
-                                state.notes.lock().await.deref_mut(),
+                                &mut processes,
                                 note,
                                 exit_tx.clone()
                             ).await;

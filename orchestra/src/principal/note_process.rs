@@ -1,15 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
-    ops::DerefMut,
     process::Command,
     sync::Arc,
 };
 
 use shared_child::SharedChild;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, instrument, warn, Instrument};
 
-use crate::maestro::models::{DesiredState, Note, NoteState, RestartPolicy};
+use crate::maestro::models::{DesiredState, Note, NoteState};
 
 use super::AppState;
 
@@ -157,11 +156,6 @@ pub async fn synchronize_state(
                 if matches!(override_note.desired_state, DesiredState::Run) {
                     start_note(&mut notes, override_note, exit_tx.clone()).await;
                 }
-                // let managed_note = ManagedNote {
-                //     note: override_note.clone(),
-                //     child: None,
-                // };
-                // notes.insert(override_note.name.clone(), managed_note);
             }
         }
     }

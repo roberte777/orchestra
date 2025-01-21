@@ -9,12 +9,11 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::info;
 use watcher::EventType;
 
 use crate::maestro::{
     models::{DesiredState, NoteState, Principal, PrincipalState},
-    repositories::symphony,
     AppState,
 };
 
