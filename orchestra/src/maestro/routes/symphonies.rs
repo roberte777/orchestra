@@ -29,16 +29,18 @@ pub async fn start_symphony(
         .iter()
         .map(|n| n.to_data_obj(&symphony.name))
         .collect::<Vec<Note>>();
-    // Create and start symphony
     {
         let symphony_repo = app_state.symphony_repository.lock().await;
+        let notes_repo = app_state.note_repository.lock().await;
         let symphony_name = symphony.name();
+        // check if symphony exists
+        if symphony_repo.get_symphony(&symphony_name).await.is_some() {
+            return;
+        }
+        // Create and start symphony
         symphony_repo.add_symphony(symphony).await;
         symphony_repo.start_symphony(&symphony_name).await;
-    }
-    // Create and start notes in the symphony
-    {
-        let notes_repo = app_state.note_repository.lock().await;
+        // Create and start notes in the symphony
         for note in notes.clone() {
             let note_name = note.name.clone();
             notes_repo.add_note(note).await;
@@ -65,6 +67,10 @@ pub async fn stop_symphony(
         Some(symphony) => symphony,
         None => return StatusCode::INTERNAL_SERVER_ERROR,
     };
+    // if already stopping, return OK with no work
+    if matches!(symphony.desired_state(), DesiredState::Stop) {
+        return StatusCode::OK;
+    }
     for note in symphony.notes() {
         let success = notes_repo.stop_note(&note).await;
         if success {
