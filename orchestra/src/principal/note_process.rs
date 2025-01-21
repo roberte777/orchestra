@@ -93,8 +93,6 @@ pub async fn stop_note(notes: &mut HashMap<String, ManagedNote>, name: &str) {
                 debug!("Killing process: {}", name);
                 // Mark it as Killed by command
                 let _ = child.kill();
-            } else {
-                warn!("Process {} has no active child to kill.", name);
             }
         }
         None => {

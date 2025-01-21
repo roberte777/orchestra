@@ -87,40 +87,6 @@ pub async fn get_note_by_name(
     }
 }
 
-pub async fn start_note(
-    State(app_state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-) -> StatusCode {
-    let repository = app_state.note_repository.lock().await;
-    // we can only restart a note if its desired state is run (i.e. it has not
-    // been terminated by a user yet.)
-
-    let existing_note = match repository.get_note(&name).await {
-        Some(note) => note,
-        None => return StatusCode::NOT_FOUND,
-    };
-
-    // can't start a stopped process
-    if matches!(existing_note.state, NoteState::Terminating)
-        || matches!(existing_note.state, NoteState::Terminated)
-    {
-        return StatusCode::INTERNAL_SERVER_ERROR;
-    }
-
-    match repository.start_note(&name).await {
-        true => {
-            let note = repository.get_note(&name).await.unwrap();
-            let event = watcher::Event {
-                event_type: EventType::Modified,
-                resource: note,
-            };
-            app_state.watch_manager.lock().await.notify_note(event);
-            StatusCode::OK
-        }
-        false => StatusCode::NOT_FOUND,
-    }
-}
-
 pub async fn stop_note(
     State(app_state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -145,6 +111,5 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(get_notes))
         .route("/{name}", get(get_note_by_name))
-        .route("/{name}/start", patch(start_note))
         .route("/{name}/stop", patch(stop_note))
 }
