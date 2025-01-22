@@ -1,21 +1,28 @@
 import { useParams, useNavigate } from "react-router";
+import { useSymphonies } from "@/lib/SymphonyProvider";
 import { SymphonyForm } from "../components/SymphonyForm";
 
 export default function EditSymphony() {
-  const navigate = useNavigate();
   const { id } = useParams();
+  const navigate = useNavigate();
+  const { trackedSymphonies, updateSymphony } = useSymphonies();
 
-  // This would typically be fetched from an API
-  const symphony = {
-    id,
-    name: `Symphony ${id}`,
-  };
+  // Find the existing symphony in our tracked list
+  const symphony = trackedSymphonies.find((s) => s.name === id);
 
   const handleSubmit = async (data) => {
-    // This would typically be an API call to update the symphony
-    console.log("Updating symphony:", { id, ...data });
+    // Replace the fields in the existing symphony
+    const updated = {
+      ...symphony,
+      ...data,
+    };
+    await updateSymphony(updated);
     navigate("/");
   };
+
+  if (!symphony) {
+    return <div>Symphony not found!</div>;
+  }
 
   return (
     <div>

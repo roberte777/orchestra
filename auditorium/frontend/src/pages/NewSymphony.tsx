@@ -1,12 +1,13 @@
 import { useNavigate } from "react-router";
 import { SymphonyForm } from "../components/SymphonyForm";
+import { useSymphonies } from "@/lib/SymphonyProvider";
 
 export default function NewSymphony() {
   const navigate = useNavigate();
+  const { createSymphony } = useSymphonies();
 
   const handleSubmit = async (data) => {
-    // This would typically be an API call to create a new symphony
-    console.log("Creating new symphony:", data);
+    await createSymphony({ ...data, notes: [] });
     navigate("/");
   };
 

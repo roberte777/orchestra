@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { NoteItem } from "./NoteItem";
 
 export function SymphonyItem({ symphony }) {
-  const isRunning = symphony.state === "Running";
+  const isRunning = symphony.auditorium_state === "Running";
 
   const toggleSymphony = async () => {
     if (isRunning) {
@@ -36,12 +36,12 @@ export function SymphonyItem({ symphony }) {
             >
               {isRunning ? "Stop" : "Start"}
             </Button>
-            <Link to={`/edit-symphony/${symphony.id}`}>
+            <Link to={`/edit-symphony/${symphony.name}`}>
               <Button variant="outline" className="mr-2">
                 Edit
               </Button>
             </Link>
-            <Link to={`/new-note/${symphony.id}`}>
+            <Link to={`/new-note/${symphony.name}`}>
               <Button variant="outline">Add Note</Button>
             </Link>
           </div>

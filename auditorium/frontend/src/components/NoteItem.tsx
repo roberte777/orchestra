@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
 export function NoteItem({ note, symphonyId }) {
-  const isRunning = note.state == "Running";
+  const isRunning = note.auditorium_state == "Running";
 
   const toggleNote = () => {
     // This would typically be an API call
@@ -23,6 +23,7 @@ export function NoteItem({ note, symphonyId }) {
             >
               {isRunning ? "Stop" : "Start"}
             </Button>
+            <div className="inline mr-2">State: {note.state}</div>
             <Link to={`/edit-note/${symphonyId}/${note.name}`}>
               <Button variant="outline" size="sm">
                 Edit

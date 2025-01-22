@@ -1,3 +1,7 @@
+use auditorium::{
+    tracked_symphonies::{tracked_symphonies_routes, InMemoryAuditoriumStore},
+    AppState,
+};
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -13,28 +17,26 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
 };
+use tokio::sync::Mutex;
 
 #[cfg(feature = "frontend")]
 static FRONTEND_DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
-
-#[derive(Clone)]
-struct AppState {
-    maestro_url: String,
-    client: Client,
-}
 
 pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<u16>) {
     let client = Client::new();
     let app_state = AppState {
         maestro_url,
         client,
+        tracked_symphonies: Arc::new(Mutex::new(InMemoryAuditoriumStore::with_defaults())),
     };
     // build our application with a route
     let mut app = Router::new()
         .route("/api/v1/symphonies", get(get_symphonies))
         .route("/api/v1/symphonies", post(start_symphony))
         .route("/api/v1/symphonies/{name}/stop", post(stop_symphony))
+        .nest("/api/v1/tracked-symphonies", tracked_symphonies_routes())
         .with_state(app_state);
 
     #[cfg(feature = "frontend")]
