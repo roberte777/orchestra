@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router";
-import { useSymphonies } from "@/lib/SymphonyProvider";
+import { CrudSymphony, useSymphonies } from "@/lib/SymphonyProvider";
 import { SymphonyForm } from "../components/SymphonyForm";
 
 export default function EditSymphony() {
@@ -10,13 +10,14 @@ export default function EditSymphony() {
   // Find the existing symphony in our tracked list
   const symphony = trackedSymphonies.find((s) => s.name === id);
 
-  const handleSubmit = async (data) => {
+  const handleSubmit = async (data: CrudSymphony) => {
     // Replace the fields in the existing symphony
+    const oldName = symphony.name;
     const updated = {
       ...symphony,
-      ...data,
+      name: data.name,
     };
-    await updateSymphony(updated);
+    await updateSymphony(oldName, updated);
     navigate("/");
   };
 

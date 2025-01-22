@@ -1,8 +1,15 @@
 import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { TrackedNote } from "@/lib/SymphonyProvider";
 
-export function NoteItem({ note, symphonyId }) {
+export function NoteItem({
+  note,
+  symphonyId,
+}: {
+  note: TrackedNote;
+  symphonyId: string;
+}) {
   const isRunning = note.auditorium_state == "Running";
 
   const toggleNote = () => {

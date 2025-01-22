@@ -1,15 +1,16 @@
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { NoteForm } from "../components/NoteForm";
-import { useSymphonies } from "@/lib/SymphonyProvider";
+import { useSymphonies, CrudNote } from "@/lib/SymphonyProvider";
 
 export default function EditNote() {
+  const navigate = useNavigate();
   const { symphonyId, noteId } = useParams();
   const { trackedSymphonies, updateSymphony } = useSymphonies();
   const note = trackedSymphonies
     .find((s) => s.name === symphonyId)
     .notes.find((n) => n.name === noteId);
 
-  const handleSubmit = async (data) => {
+  const handleSubmit = async (data: CrudNote) => {
     const existingSymphony = trackedSymphonies.find(
       (s) => s.name === symphonyId,
     );
@@ -20,7 +21,8 @@ export default function EditNote() {
         return { ...n };
       }
     });
-    updateSymphony(existingSymphony);
+    await updateSymphony(existingSymphony.name, existingSymphony);
+    navigate("/");
   };
 
   return (

@@ -4,6 +4,7 @@ use reqwest::Client;
 use tokio::sync::Mutex;
 use tracked_symphonies::InMemoryAuditoriumStore;
 
+pub mod dto;
 pub mod tracked_symphonies;
 
 #[derive(Clone)]

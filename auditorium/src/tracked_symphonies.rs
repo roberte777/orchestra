@@ -1,10 +1,14 @@
-use crate::AppState;
+use crate::{
+    dto::{CreateSymphony, MaestroSymphony},
+    AppState,
+};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     routing::{delete, get, post, put},
     Json, Router,
 };
+use orchestra::maestro::models::{Note, NoteState, RestartPolicy};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -207,14 +211,37 @@ async fn get_tracked_symphonies(State(app_state): State<AppState>) -> Json<Vec<T
 /// Add a new user-tracked symphony
 async fn create_tracked_symphony(
     State(app_state): State<AppState>,
-    Json(payload): Json<TrackedSymphony>,
+    Json(payload): Json<CreateSymphony>,
 ) -> StatusCode {
     let mut store = app_state.tracked_symphonies.lock().await;
     if store.symphonies.contains_key(&payload.name) {
         // Already exists
         return StatusCode::CONFLICT;
     }
-    store.symphonies.insert(payload.name.clone(), payload);
+    let mut tracked_notes = Vec::new();
+    for note in payload.notes {
+        let tracked_note = TrackedNote {
+            name: note.name,
+            description: note.description,
+            host: note.host,
+            command: note.command,
+            args: note.args,
+            env: note.env,
+            restart_policy: note.restart_policy,
+            state: NoteState::Terminated,
+            auditorium_state: AuditoriumResourceState::Stopped,
+        };
+
+        tracked_notes.push(tracked_note);
+    }
+    let tracked_symphony = TrackedSymphony {
+        name: payload.name,
+        notes: tracked_notes,
+        auditorium_state: AuditoriumResourceState::Stopped,
+    };
+    store
+        .symphonies
+        .insert(tracked_symphony.name.clone(), tracked_symphony);
     StatusCode::CREATED
 }
 
@@ -223,7 +250,7 @@ async fn create_tracked_symphony(
 async fn update_tracked_symphony(
     State(app_state): State<AppState>,
     Path(name): Path<String>,
-    Json(payload): Json<TrackedSymphony>,
+    Json(payload): Json<CreateSymphony>,
 ) -> StatusCode {
     println!("{}", name);
     println!("{:?}", payload);
@@ -231,11 +258,34 @@ async fn update_tracked_symphony(
     if !store.symphonies.contains_key(&name) {
         return StatusCode::NOT_FOUND;
     }
-    // Make sure the key matches
-    if name != payload.name {
-        return StatusCode::BAD_REQUEST;
+    let mut tracked_notes = Vec::new();
+    for note in payload.notes {
+        let tracked_note = TrackedNote {
+            name: note.name,
+            description: note.description,
+            host: note.host,
+            command: note.command,
+            args: note.args,
+            env: note.env,
+            restart_policy: note.restart_policy,
+            state: NoteState::Terminated,
+            auditorium_state: AuditoriumResourceState::Stopped,
+        };
+
+        tracked_notes.push(tracked_note);
     }
-    store.symphonies.insert(name, payload);
+    let tracked_symphony = TrackedSymphony {
+        name: payload.name,
+        notes: tracked_notes,
+        auditorium_state: AuditoriumResourceState::Stopped,
+    };
+    store
+        .symphonies
+        .insert(tracked_symphony.name.clone(), tracked_symphony.clone());
+    // if the name is changing, insert and remove
+    if tracked_symphony.name != name {
+        store.symphonies.remove(&name);
+    }
     StatusCode::OK
 }
 
@@ -263,46 +313,4 @@ pub fn tracked_symphonies_routes() -> Router<AppState> {
             "/{name}",
             put(update_tracked_symphony).delete(delete_tracked_symphony),
         )
-}
-
-/// Example minimal Maestro symphony shape
-/// that we get from GET /api/v1/symphonies in Maestro
-#[derive(Clone, Debug, Deserialize)]
-pub struct MaestroSymphony {
-    pub name: String,
-    pub notes: Vec<MaestroNote>,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct MaestroNote {
-    pub name: String,
-    pub description: String,
-    pub host: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: HashMap<String, String>,
-    pub restart_policy: RestartPolicy,
-    pub symphony: String,
-    pub state: NoteState,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub enum RestartPolicy {
-    Never,
-    OnFailure,
-    Always,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
-pub enum NoteState {
-    Pending,
-    Running,
-    // if the process exits by iteslf with a zero exit code
-    Completed,
-    //if a process exits by itself with a non-zero exit code
-    Crashed,
-    // if a user terminates a process
-    Terminated,
-    // in the process of shutting down
-    Terminating,
 }

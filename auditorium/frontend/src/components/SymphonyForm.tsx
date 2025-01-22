@@ -8,13 +8,20 @@ import {
   CardContent,
   CardFooter,
 } from "@/components/ui/card";
+import { CrudSymphony, TrackedSymphony } from "@/lib/SymphonyProvider";
 
-export function SymphonyForm({ symphony, onSubmit }) {
+export function SymphonyForm({
+  symphony,
+  onSubmit,
+}: {
+  symphony?: TrackedSymphony;
+  onSubmit: (data: CrudSymphony) => void;
+}) {
   const [name, setName] = useState(symphony?.name || "");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
-    onSubmit({ name });
+    onSubmit({ ...symphony, name });
   };
 
   return (

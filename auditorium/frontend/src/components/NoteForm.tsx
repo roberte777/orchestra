@@ -9,8 +9,15 @@ import {
   CardContent,
   CardFooter,
 } from "@/components/ui/card";
+import { CrudNote, TrackedNote } from "@/lib/SymphonyProvider";
 
-export function NoteForm({ note, onSubmit }) {
+export function NoteForm({
+  note,
+  onSubmit,
+}: {
+  note?: TrackedNote;
+  onSubmit: (data: CrudNote) => void;
+}) {
   const [formData, setFormData] = useState({
     name: note?.name || "",
     description: note?.description || "",
@@ -22,17 +29,21 @@ export function NoteForm({ note, onSubmit }) {
           .map(([key, value]) => `${key}=${value}`)
           .join("\n")
       : "",
-    restart_policy: note?.restart_policy || "always",
+    restart_policy: note?.restart_policy || "Always",
   });
 
-  const handleChange = (e) => {
+  const handleChange = (
+    e: React.ChangeEvent<
+      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+    >,
+  ) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const submitData = {
+    const submitData: CrudNote = {
       ...formData,
       args: formData.args.split(" ").filter((arg) => arg.trim() !== ""),
       env: Object.fromEntries(
@@ -159,9 +170,9 @@ export function NoteForm({ note, onSubmit }) {
               onChange={handleChange}
               className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
             >
-              <option value="always">Always</option>
-              <option value="on-failure">On Failure</option>
-              <option value="never">Never</option>
+              <option value="Always">Always</option>
+              <option value="OnFailure">On Failure</option>
+              <option value="Never">Never</option>
             </select>
           </div>
         </CardContent>

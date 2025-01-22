@@ -2,8 +2,9 @@ import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { NoteItem } from "./NoteItem";
+import { TrackedSymphony } from "@/lib/SymphonyProvider";
 
-export function SymphonyItem({ symphony }) {
+export function SymphonyItem({ symphony }: { symphony: TrackedSymphony }) {
   const isRunning = symphony.auditorium_state === "Running";
 
   const toggleSymphony = async () => {

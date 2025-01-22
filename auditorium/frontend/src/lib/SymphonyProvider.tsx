@@ -8,9 +8,16 @@ import React, {
 
 // The shape we get from /api/v1/tracked-symphonies
 // (Make sure it matches what your Rust code returns!)
-type AuditoriumResourceState = "Running" | "Stopped";
+export type AuditoriumResourceState = "Running" | "Stopped";
 
-interface TrackedNote {
+export type NoteState =
+  | "Pending"
+  | "Running"
+  | "Terminated"
+  | "Completed"
+  | "Crashed";
+
+export interface TrackedNote {
   name: string;
   description: string;
   host: string;
@@ -18,22 +25,38 @@ interface TrackedNote {
   args: string[];
   env: Record<string, string>;
   restart_policy: string;
+  state: NoteState;
   auditorium_state: AuditoriumResourceState;
 }
 
-interface TrackedSymphony {
+export interface TrackedSymphony {
   name: string;
   notes: TrackedNote[];
   auditorium_state: AuditoriumResourceState;
 }
 
 // The shape of our Context
-interface SymphoniesContextValue {
+export interface SymphoniesContextValue {
   trackedSymphonies: TrackedSymphony[];
   reloadSymphonies: () => void;
-  createSymphony: (sym: Omit<TrackedSymphony, "state">) => Promise<void>;
-  updateSymphony: (sym: TrackedSymphony) => Promise<void>;
+  createSymphony: (sym: CrudSymphony) => Promise<void>;
+  updateSymphony: (name: string, sym: CrudSymphony) => Promise<void>;
   removeSymphony: (name: string) => Promise<void>;
+}
+
+export interface CrudSymphony {
+  name: string;
+  notes: CrudNote[];
+}
+
+export interface CrudNote {
+  name: string;
+  description: string;
+  host: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  restart_policy: string;
 }
 
 // Create the context
@@ -81,7 +104,7 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
   }, []);
 
   // Create a new user-tracked symphony
-  const createSymphony = async (sym: Omit<TrackedSymphony, "state">) => {
+  const createSymphony = async (sym: CrudSymphony) => {
     const resp = await fetch("/api/v1/tracked-symphonies", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -95,8 +118,8 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
   };
 
   // Update an existing user-tracked symphony
-  const updateSymphony = async (sym: TrackedSymphony) => {
-    const resp = await fetch(`/api/v1/tracked-symphonies/${sym.name}`, {
+  const updateSymphony = async (name: string, sym: CrudSymphony) => {
+    const resp = await fetch(`/api/v1/tracked-symphonies/${name}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sym),
