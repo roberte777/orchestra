@@ -1,15 +1,15 @@
-import { useParams, useNavigate } from "react-router";
+import { useParams, useLocation } from "wouter";
 import { NoteForm } from "../components/NoteForm";
 import { CrudNote, CrudSymphony, useSymphonies } from "@/lib/SymphonyProvider";
 
 export default function NewNote() {
-  const navigate = useNavigate();
-  const { symphonyId } = useParams();
+  const [_, navigate] = useLocation();
+  const params = useParams<{ symphonyId: string }>();
   const { updateSymphony, trackedSymphonies } = useSymphonies();
 
   const handleSubmit = async (data: CrudNote) => {
     const existingSymphony = trackedSymphonies.find(
-      (s) => s.name === symphonyId,
+      (s) => s.name === params.symphonyId,
     ) as CrudSymphony;
 
     existingSymphony.notes = [...existingSymphony.notes, data] as CrudNote[];

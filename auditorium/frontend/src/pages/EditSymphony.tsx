@@ -1,14 +1,14 @@
-import { useParams, useNavigate } from "react-router";
+import { useParams, useLocation } from "wouter";
 import { CrudSymphony, useSymphonies } from "@/lib/SymphonyProvider";
 import { SymphonyForm } from "../components/SymphonyForm";
 
 export default function EditSymphony() {
-  const { id } = useParams();
-  const navigate = useNavigate();
+  const params = useParams<{ id: string }>();
+  const [_, navigate] = useLocation();
   const { trackedSymphonies, updateSymphony } = useSymphonies();
 
   // Find the existing symphony in our tracked list
-  const symphony = trackedSymphonies.find((s) => s.name === id);
+  const symphony = trackedSymphonies.find((s) => s.name === params.id);
 
   const handleSubmit = async (data: CrudSymphony) => {
     // Replace the fields in the existing symphony
