@@ -1,9 +1,9 @@
-import { useNavigate } from "react-router";
+import { useLocation } from "wouter";
 import { SymphonyForm } from "../components/SymphonyForm";
 import { CrudSymphony, useSymphonies } from "@/lib/SymphonyProvider";
 
 export default function NewSymphony() {
-  const navigate = useNavigate();
+  const [_, navigate] = useLocation();
   const { createSymphony } = useSymphonies();
 
   const handleSubmit = async (data: CrudSymphony) => {

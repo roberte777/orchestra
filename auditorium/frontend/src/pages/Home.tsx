@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { SymphonyList } from "../components/SymphonyList";
 
