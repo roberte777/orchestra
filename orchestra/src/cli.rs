@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::maestro::cli::MaestroArgs;
+use crate::{maestro::cli::MaestroArgs, principal::cli::PrincipalArgs};
 
 /// Main program for "orchestra", combining maestro and principal
 #[derive(Parser, Debug)]
@@ -15,6 +15,6 @@ pub struct OrchestraArgs {
 pub enum Commands {
     /// Run the maestro command
     Maestro(MaestroArgs),
-    // /// Run the principal command
-    // Principal(PrincipalArgs),
+    /// Run the principal command
+    Principal(PrincipalArgs),
 }
