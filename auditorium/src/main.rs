@@ -4,12 +4,16 @@ use auditorium::{
 };
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, State,
+    },
     http::{header, Response, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
+use futures::{SinkExt, StreamExt};
 use include_dir::{include_dir, Dir};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -19,21 +23,60 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{
+    broadcast::{self, Receiver},
+    Mutex,
+};
 
 #[cfg(feature = "frontend")]
 static FRONTEND_DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
 
 pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<u16>) {
     let client = Client::new();
+    let (symphony_tx, _) = broadcast::channel::<String>(100);
+
+    // TODO: This will use SSE in the future instead of polling itself for updates
+    tokio::spawn({
+        let symphony_tx = symphony_tx.clone();
+
+        async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let response = reqwest::get(format!(
+                    "{}/api/v1/tracked-symphonies",
+                    "http://localhost:8888"
+                ))
+                .await;
+
+                if let Ok(resp) = response {
+                    match resp.text().await {
+                        Ok(txt) => {
+                            let _ = symphony_tx.send(txt);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Malformed data received from tracked symphonies endpoint: {}",
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    println!("Failed to make request to retrieve tracked symphonies");
+                }
+            }
+        }
+    });
+
     let app_state = AppState {
         maestro_url,
         client,
         tracked_symphonies: Arc::new(Mutex::new(InMemoryAuditoriumStore::with_defaults())),
+        symphony_tx,
     };
     // build our application with a route
     let mut app = Router::new()
-        .route("/api/v1/symphonies", get(get_symphonies))
+        .route("/ws", any(ws_handler))
         .route("/api/v1/symphonies", post(start_symphony))
         .route("/api/v1/symphonies/{name}/stop", post(stop_symphony))
         .nest("/api/v1/tracked-symphonies", tracked_symphonies_routes())
@@ -105,21 +148,48 @@ async fn serve_embedded(Path(req_path): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn get_symphonies(State(app_state): State<AppState>) -> impl IntoResponse {
-    println!("got request");
-    let response = reqwest::get(format!("{}/api/v1/symphonies", app_state.maestro_url)).await;
-    match response {
-        Ok(resp) => {
-            println!("{:?}", resp);
-            // println!("{:?}", resp.text().await.unwrap());
-            // (StatusCode::OK, resp.json::<String>().await.unwrap())
-            (StatusCode::OK, resp.text().await.unwrap())
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_websocket(socket, state.symphony_tx.subscribe()))
+}
+
+async fn handle_websocket(socket: WebSocket, mut symphony_rx: Receiver<String>) {
+    println!("New WebSocket connection");
+    let (mut socket_tx, mut socket_rx) = socket.split();
+
+    // Spawn tracked symphony sender task
+    tokio::spawn(async move {
+        loop {
+            // TODO: Add cancellation token so we can stop this task later if needed
+            tokio::select! {
+                msg = symphony_rx.recv() => {
+                    if let Ok(msg) = msg {
+                        if socket_tx.send(Message::Text(msg.into())).await.is_err() {
+                            println!("Client disconnected");
+                            break;
+                        }
+                    } else {
+                        println!("Failed to receive message from symphony_rx channel");
+                        break;
+                    }
+                },
+            }
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to make request to maestro server".to_string(),
-        ),
+    });
+
+    // Handle client status messages
+    // TODO: Clients may not need to send messages, but this is a placeholder for now
+    while let Some(msg) = socket_rx.next().await {
+        match msg {
+            Ok(Message::Close(_)) => break,
+            Err(e) => {
+                println!("WebSocket error: {}", e);
+                break;
+            }
+            _ => {}
+        }
     }
+
+    println!("WebSocket connection closed");
 }
 
 /// Create and start a Symphony

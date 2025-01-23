@@ -38,7 +38,6 @@ export interface TrackedSymphony {
 // The shape of our Context
 export interface SymphoniesContextValue {
   trackedSymphonies: TrackedSymphony[];
-  reloadSymphonies: () => void;
   createSymphony: (sym: CrudSymphony) => Promise<void>;
   updateSymphony: (name: string, sym: CrudSymphony) => Promise<void>;
   removeSymphony: (name: string) => Promise<void>;
@@ -79,28 +78,22 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
     [],
   );
 
-  // A function to load/poll data from the auditorium
-  const reloadSymphonies = async () => {
-    try {
-      const resp = await fetch("/api/v1/tracked-symphonies");
-      if (!resp.ok) {
-        console.error("Failed to fetch tracked symphonies");
-        return;
-      }
-      const data: TrackedSymphony[] = await resp.json();
-      setTrackedSymphonies(data);
-    } catch (error) {
-      console.error("Error fetching symphonies:", error);
-    }
-  };
-
-  // On mount, load once. Then poll every 5s.
+  // Load the user-tracked symphonies as they are updated
   useEffect(() => {
-    reloadSymphonies();
-    const interval = setInterval(() => {
-      reloadSymphonies();
-    }, 5000);
-    return () => clearInterval(interval);
+    const websocket = new WebSocket("/ws");
+
+    websocket.onopen = () => {
+      console.debug("WebSocket connection established");
+    };
+
+    websocket.onmessage = (event) => {
+      const data: TrackedSymphony[] = JSON.parse(event.data);
+      setTrackedSymphonies(data);
+    };
+
+    return () => {
+      websocket.close();
+    };
   }, []);
 
   // Create a new user-tracked symphony
@@ -114,7 +107,6 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
       console.error("Failed to create symphony:", resp.status);
       return;
     }
-    await reloadSymphonies();
   };
 
   // Update an existing user-tracked symphony
@@ -128,7 +120,6 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
       console.error("Failed to update symphony:", resp.status);
       return;
     }
-    await reloadSymphonies();
   };
 
   // Remove a user-tracked symphony
@@ -140,12 +131,10 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
       console.error("Failed to remove symphony:", resp.status);
       return;
     }
-    await reloadSymphonies();
   };
 
   const value: SymphoniesContextValue = {
     trackedSymphonies,
-    reloadSymphonies,
     createSymphony,
     updateSymphony,
     removeSymphony,

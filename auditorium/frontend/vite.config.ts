@@ -11,10 +11,15 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": {
+      "^/api": {
         target: "http://localhost:8888",
         changeOrigin: true,
         // rewrite: (path) => path.replace(/^\/api/, ""),
+      },
+      "^/ws": {
+        target: "ws://localhost:8888",
+        ws: true,
+        changeOrigin: true,
       },
     },
   },
