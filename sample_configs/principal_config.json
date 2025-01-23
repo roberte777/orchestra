@@ -1,0 +1,4 @@
+{
+  "maestro_server_address": "http://127.0.0.1:3000",
+  "heartbeat_interval_ms": 500
+}

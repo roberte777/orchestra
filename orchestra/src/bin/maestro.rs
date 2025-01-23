@@ -1,9 +1,10 @@
-use orchestra::maestro::maestro;
+use clap::Parser;
+use orchestra::maestro::run_maestro;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let server = maestro();
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, server).await.unwrap();
+    let args = orchestra::maestro::cli::MaestroArgs::parse();
+    run_maestro(args).await?;
+    Ok(())
 }

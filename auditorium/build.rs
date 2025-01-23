@@ -8,9 +8,9 @@ fn main() {
         // Adjust the below commands according to your actual build setup.
         // You might need `npm install` once if you're not ensuring dependencies are installed.
         let command = if cfg!(target_os = "windows") {
-            "npm.cmd"
+            "bun.cmd"
         } else {
-            "npm"
+            "bun"
         };
         println!("Installing frontend dependencies");
         let status = Command::new(command)

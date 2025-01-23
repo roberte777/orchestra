@@ -6,3 +6,4 @@ pub use maestro::models::{
 };
 
 pub use maestro::dto::{self, CreateNote, CreateSymphony, SymphonyWithNotes};
+pub mod cli;
