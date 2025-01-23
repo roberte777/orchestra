@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use watcher::EventType;
 
 use crate::maestro::{
@@ -64,10 +64,16 @@ async fn principal_heartbeat(
                 app_state.watch_manager.lock().await.notify_symphony(event);
             }
         } else {
-            let mut note_update = note_repo
-                .get_note(&note.name)
-                .await
-                .expect("Should get valid note from principal heartbeat");
+            let mut note_update = match note_repo.get_note(&note.name).await {
+                Some(n) => n,
+                None => {
+                    warn!(
+                        principal = heartbeat.name,
+                        "Principal out of sync with server"
+                    );
+                    continue;
+                }
+            };
 
             // terminating notes can only be updated to terminated
             if matches!(note_update.state, NoteState::Terminating) {
