@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use axum::Router;
+use orchestra::dto::{HeartbeatDto, HeartbeatNoteDto};
 use orchestra::maestro::{maestro, models::NoteState};
 use orchestra::{CreateNote, CreateSymphony, Note, RestartPolicy, SymphonyWithNotes};
 use reqwest::StatusCode;
@@ -161,6 +162,29 @@ async fn test_principal_heartbeat() {
     let (addr, server_handle) = spawn_test_app().await;
     let client = reqwest::Client::new();
 
+    // Create a new symphony with two notes
+    let symphony_body = CreateSymphony {
+        name: "Test Symphony".to_string(),
+        notes: vec![CreateNote {
+            name: "Test Note".to_string(),
+            description: "First note".to_string(),
+            host: "localhost".to_string(),
+            command: "echo".to_string(),
+            args: vec!["Stopping".into()],
+            env: std::collections::HashMap::new(),
+            restart_policy: RestartPolicy::Never,
+        }],
+    };
+
+    // Start it
+    let res = client
+        .post(format!("http://{}/api/v1/symphonies", addr))
+        .json(&symphony_body)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(res.status(), StatusCode::OK);
+
     // There's no principal yet
     let res = client
         .get(format!("http://{}/api/v1/principals", addr))
@@ -174,22 +198,11 @@ async fn test_principal_heartbeat() {
         "Expected no principals initially"
     );
 
-    // Post a principal heartbeat
-    #[derive(Serialize)]
-    struct HeartbeatNote {
-        name: String,
-        state: NoteState,
-    }
-    #[derive(Serialize)]
-    struct HeartbeatDto {
-        name: String,
-        notes: Vec<HeartbeatNote>,
-    }
-
     let payload = HeartbeatDto {
         name: "TestPrincipal".to_string(),
-        notes: vec![HeartbeatNote {
-            name: "someNote".to_string(),
+        notes: vec![HeartbeatNoteDto {
+            symphony: "Test Symphony".into(),
+            name: "Test Note".to_string(),
             state: NoteState::Running,
         }],
     };

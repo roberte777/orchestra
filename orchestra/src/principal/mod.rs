@@ -87,6 +87,7 @@ async fn heartbeat_task(
     let notes = notes
         .iter()
         .map(|n| HeartbeatNoteDto {
+            symphony: n.1.note.symphony.clone(),
             name: n.1.note.name.clone(),
             state: n.1.note.state.clone(),
         })

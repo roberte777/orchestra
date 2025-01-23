@@ -84,6 +84,7 @@ pub struct HeartbeatDto {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct HeartbeatNoteDto {
+    pub symphony: String,
     pub name: String,
     pub state: NoteState,
 }
