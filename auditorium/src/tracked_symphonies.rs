@@ -235,6 +235,7 @@ async fn create_tracked_symphony(
     store
         .symphonies
         .insert(tracked_symphony.name.clone(), tracked_symphony);
+    app_state.symphony_tx.send(()).unwrap();
     StatusCode::CREATED
 }
 
@@ -279,6 +280,7 @@ async fn update_tracked_symphony(
     if tracked_symphony.name != name {
         store.symphonies.remove(&name);
     }
+    app_state.symphony_tx.send(()).unwrap();
     StatusCode::OK
 }
 
@@ -289,6 +291,7 @@ async fn delete_tracked_symphony(
 ) -> StatusCode {
     let mut store = app_state.tracked_symphonies.lock().await;
     if store.symphonies.remove(&name).is_some() {
+        app_state.symphony_tx.send(()).unwrap();
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
