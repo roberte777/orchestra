@@ -60,7 +60,7 @@ impl Watchable for Note {
 // the states a symphony can be in.
 // to it. It moves to terminating while waiting for all notes to be terminated
 // by principals. No new notes can be added
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SymphonyState {
     // A symphony is running as soon as it is in the database and notes can be
     // added to it.
@@ -71,7 +71,7 @@ pub enum SymphonyState {
     Terminating,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Symphony {
     pub name: String,
     pub notes: Vec<String>,
