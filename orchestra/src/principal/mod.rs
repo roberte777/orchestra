@@ -39,7 +39,7 @@ impl HeartbeatActor {
     }
 
     pub fn start(&mut self, state: AppState) {
-        let mut interval = time::interval(Duration::from_secs(5));
+        let mut interval = time::interval(Duration::from_millis(500));
         let cancel = CancellationToken::new();
         let child = cancel.child_token();
         let url = self.url.clone();
