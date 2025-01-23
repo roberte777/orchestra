@@ -42,13 +42,17 @@ export interface SymphoniesContextValue {
   trackedSymphonies: TrackedSymphony[];
   getSymphony: (name: string) => TrackedSymphony | undefined;
   createSymphony: (sym: CrudSymphony) => Promise<void>;
-  updateSymphony: (name: string, sym: CrudSymphony) => Promise<void>;
+  updateSymphony: (name: string, sym: CrudEditSymphony) => Promise<void>;
   removeSymphony: (name: string) => Promise<void>;
 }
 
 export interface CrudSymphony {
   name: string;
   notes: CrudNote[];
+}
+
+export interface CrudEditSymphony {
+  name: string;
 }
 
 export interface CrudNote {
@@ -114,7 +118,7 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
   };
 
   // Update an existing user-tracked symphony
-  const updateSymphony = async (name: string, sym: CrudSymphony) => {
+  const updateSymphony = async (name: string, sym: CrudEditSymphony) => {
     const resp = await fetch(`/api/v1/tracked-symphonies/${name}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

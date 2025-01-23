@@ -6,6 +6,7 @@ use axum::{
     Json, Router,
 };
 use orchestra::{
+    dto::EditSymphony,
     maestro::models::{NoteState, RestartPolicy},
     CreateSymphony, SymphonyWithNotes,
 };
@@ -244,42 +245,18 @@ async fn create_tracked_symphony(
 async fn update_tracked_symphony(
     State(app_state): State<AppState>,
     Path(name): Path<String>,
-    Json(payload): Json<CreateSymphony>,
+    Json(payload): Json<EditSymphony>,
 ) -> StatusCode {
-    println!("{}", name);
-    println!("{:?}", payload);
     let mut store = app_state.tracked_symphonies.lock().await;
     if !store.symphonies.contains_key(&name) {
         return StatusCode::NOT_FOUND;
+    } else if store.symphonies.contains_key(&payload.name) {
+        return StatusCode::CONFLICT;
     }
-    let mut tracked_notes = Vec::new();
-    for note in payload.notes {
-        let tracked_note = TrackedNote {
-            name: note.name,
-            description: note.description,
-            host: note.host,
-            command: note.command,
-            args: note.args,
-            env: note.env,
-            restart_policy: note.restart_policy,
-            state: NoteState::Terminated,
-            auditorium_state: AuditoriumResourceState::Stopped,
-        };
+    store.symphonies.entry(name).and_modify(|sym| {
+        sym.name = payload.name;
+    });
 
-        tracked_notes.push(tracked_note);
-    }
-    let tracked_symphony = TrackedSymphony {
-        name: payload.name,
-        notes: tracked_notes,
-        auditorium_state: AuditoriumResourceState::Stopped,
-    };
-    store
-        .symphonies
-        .insert(tracked_symphony.name.clone(), tracked_symphony.clone());
-    // if the name is changing, insert and remove
-    if tracked_symphony.name != name {
-        store.symphonies.remove(&name);
-    }
     app_state.symphony_tx.send(()).unwrap();
     StatusCode::OK
 }

@@ -48,7 +48,7 @@ export function EditSymphony({
   });
 
   const onSubmit = async (data: z.infer<typeof EditSymphonySchema>) => {
-    await updateSymphony(symphony.name, { ...data, notes: [] });
+    await updateSymphony(symphony.name, data);
     setOpen(false);
   };
 

@@ -76,6 +76,11 @@ impl CreateSymphony {
     }
 }
 
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub struct EditSymphony {
+    pub name: String,
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct HeartbeatDto {
     pub name: String,
