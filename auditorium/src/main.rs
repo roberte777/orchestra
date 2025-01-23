@@ -36,8 +36,6 @@ pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<
     let client = Client::new();
     let (symphony_tx, _) = broadcast::channel::<_>(100);
 
-    // TODO: This will use SSE in the future instead of polling itself for updates
-
     let app_state = AppState {
         maestro_url,
         client,
@@ -68,7 +66,7 @@ pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<
                     serve_embedded(Path("".to_owned())).await
                 }),
             )
-            .route("/{path}", get(|path| async { serve_embedded(path).await }))
+            .route("/{*path}", get(|path| async { serve_embedded(path).await }))
     }
 
     let ip: IpAddr = match host {
