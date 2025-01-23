@@ -17,6 +17,8 @@ export type NoteState =
   | "Completed"
   | "Crashed";
 
+export type NoteRestartPolicy = "Always" | "OnFailure" | "Never";
+
 export interface TrackedNote {
   name: string;
   description: string;
@@ -24,7 +26,7 @@ export interface TrackedNote {
   command: string;
   args: string[];
   env: Record<string, string>;
-  restart_policy: string;
+  restart_policy: NoteRestartPolicy;
   state: NoteState;
   auditorium_state: AuditoriumResourceState;
 }
@@ -38,6 +40,7 @@ export interface TrackedSymphony {
 // The shape of our Context
 export interface SymphoniesContextValue {
   trackedSymphonies: TrackedSymphony[];
+  getSymphony: (name: string) => TrackedSymphony | undefined;
   createSymphony: (sym: CrudSymphony) => Promise<void>;
   updateSymphony: (name: string, sym: CrudSymphony) => Promise<void>;
   removeSymphony: (name: string) => Promise<void>;
@@ -134,8 +137,13 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
     }
   };
 
+  const getSymphony = (name: string) => {
+    return trackedSymphonies.find((s) => s.name === name);
+  };
+
   const value: SymphoniesContextValue = {
     trackedSymphonies,
+    getSymphony,
     createSymphony,
     updateSymphony,
     removeSymphony,

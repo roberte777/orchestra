@@ -1,7 +1,7 @@
-import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { TrackedNote } from "@/lib/SymphonyProvider";
+import { EditNote } from "./dialog/edit-note";
 
 export function NoteItem({
   note,
@@ -31,11 +31,11 @@ export function NoteItem({
               {isRunning ? "Stop" : "Start"}
             </Button>
             <div className="inline mr-2">State: {note.state}</div>
-            <Link to={`/edit-note/${symphonyId}/${note.name}`}>
+            <EditNote note={note} symphonyId={symphonyId}>
               <Button variant="outline" size="sm">
                 Edit
               </Button>
-            </Link>
+            </EditNote>
           </div>
         </CardTitle>
       </CardHeader>
