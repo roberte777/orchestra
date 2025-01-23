@@ -1,3 +1,5 @@
+pub mod cli;
+pub mod config;
 pub mod dto;
 pub mod models;
 pub(crate) mod repositories;
@@ -6,6 +8,7 @@ pub(crate) mod routes;
 use std::sync::Arc;
 
 use axum::{extract::State, routing::get, Router};
+use config::MaestroConfig;
 use dto::SymphonyWithNotes;
 use models::{Note, Principal, SharedStore, SharedStoreExt};
 use repositories::{
@@ -42,10 +45,13 @@ impl AppState {
 #[derive(Clone)]
 pub struct SampleState {}
 
-pub async fn run_maestro() {
+pub async fn run_maestro(config: MaestroConfig) -> anyhow::Result<()> {
     let app = maestro();
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind(config.server_address)
+        .await
+        .unwrap();
     axum::serve(listener, app).await.unwrap();
+    Ok(())
 }
 pub fn maestro() -> Router {
     let data_store = SharedStore::new_shared();
