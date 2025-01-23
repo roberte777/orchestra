@@ -1,8 +1,9 @@
-import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { NoteItem } from "./NoteItem";
 import { TrackedSymphony } from "@/lib/SymphonyProvider";
+import { CreateNote } from "./dialog/create-note";
+import { EditSymphony } from "./dialog/edit-symphony";
 
 export function SymphonyItem({ symphony }: { symphony: TrackedSymphony }) {
   const isRunning = symphony.auditorium_state === "Running";
@@ -37,14 +38,15 @@ export function SymphonyItem({ symphony }: { symphony: TrackedSymphony }) {
             >
               {isRunning ? "Stop" : "Start"}
             </Button>
-            <Link to={`/edit-symphony/${symphony.name}`}>
+            <EditSymphony symphony={symphony}>
               <Button variant="outline" className="mr-2">
                 Edit
               </Button>
-            </Link>
-            <Link to={`/new-note/${symphony.name}`}>
+            </EditSymphony>
+
+            <CreateNote symphonyId={symphony.name}>
               <Button variant="outline">Add Note</Button>
-            </Link>
+            </CreateNote>
           </div>
         </CardTitle>
       </CardHeader>
