@@ -8,11 +8,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
 use tracing::debug;
 use watcher::EventType;
 
 use crate::maestro::{
+    dto::HeartbeatDto,
     models::{NoteState, Principal, PrincipalState, SymphonyState},
     AppState,
 };
@@ -114,20 +114,8 @@ async fn get_principals(State(app_state): State<Arc<AppState>>) -> Json<Vec<Prin
     Json(principals)
 }
 
-pub fn routes() -> Router<Arc<AppState>> {
+pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", post(principal_heartbeat))
         .route("/", get(get_principals))
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-pub struct HeartbeatDto {
-    pub name: String,
-    pub notes: Vec<HeartbeatNoteDto>,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-pub struct HeartbeatNoteDto {
-    pub name: String,
-    pub state: NoteState,
 }

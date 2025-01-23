@@ -141,7 +141,7 @@ impl Watchable for Principal {
 }
 // Define an in-memory store struct with HashMaps to store each entity type
 #[derive(Default)]
-pub struct InMemoryStore {
+pub(crate) struct InMemoryStore {
     notes: HashMap<String, Note>,
     symphonies: HashMap<String, Symphony>,
     principals: HashMap<String, Principal>,
@@ -180,10 +180,7 @@ impl InMemoryStore {
     }
 
     pub fn get_symphony_with_notes(&self, name: &str) -> Option<SymphonyWithNotes> {
-        let symphony = match self.symphonies.get(name).cloned() {
-            Some(s) => s,
-            None => return None,
-        };
+        let symphony = self.symphonies.get(name).cloned()?;
         let mut notes = Vec::new();
         for note in symphony.notes() {
             let note = self.get_note(&note).unwrap();
@@ -192,7 +189,6 @@ impl InMemoryStore {
         let final_symphony = SymphonyWithNotes {
             name: symphony.name.clone(),
             notes,
-            state: symphony.state.clone(),
         };
         Some(final_symphony)
     }
@@ -221,7 +217,7 @@ impl InMemoryStore {
     }
 
     // Methods to update data (example for notes)
-    pub fn update_note_state(&mut self, name: &str, new_state: NoteState) {
+    pub fn _update_note_state(&mut self, name: &str, new_state: NoteState) {
         if let Some(note) = self.notes.get_mut(name) {
             note.state = new_state;
         }
@@ -269,13 +265,13 @@ impl InMemoryStore {
         self.symphonies.remove(name);
     }
 
-    pub fn remove_principal(&mut self, host: &str) {
+    pub fn _remove_principal(&mut self, host: &str) {
         self.principals.remove(host);
     }
 }
 
 // To ensure safe concurrent access, wrap the InMemoryStore in an Arc<Mutex<>>
-pub type SharedStore = Arc<Mutex<InMemoryStore>>;
+pub(crate) type SharedStore = Arc<Mutex<InMemoryStore>>;
 
 pub trait SharedStoreExt {
     fn new_shared() -> Self;

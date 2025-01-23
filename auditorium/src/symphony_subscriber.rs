@@ -1,10 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use futures::StreamExt;
-use orchestra::maestro::{
-    dto::SymphonyWithNotes,
-    models::{NoteState, Symphony},
-};
+use orchestra::maestro::{dto::SymphonyWithNotes, models::NoteState};
 use reqwest_eventsource::{Event, EventSource};
 use tokio::{
     sync::{broadcast::Sender, oneshot},
@@ -13,7 +10,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    tracked_symphonies::{self, AuditoriumResourceState, TrackedSymphony},
+    tracked_symphonies::{AuditoriumResourceState, TrackedSymphony},
     AppState,
 };
 

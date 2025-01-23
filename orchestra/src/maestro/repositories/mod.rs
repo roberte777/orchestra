@@ -1,3 +1,3 @@
-pub mod note;
-pub mod principal;
-pub mod symphony;
+pub(crate) mod note;
+pub(crate) mod principal;
+pub(crate) mod symphony;

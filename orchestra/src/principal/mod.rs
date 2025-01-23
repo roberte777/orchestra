@@ -13,7 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::maestro::routes::principals::{HeartbeatDto, HeartbeatNoteDto};
+use crate::maestro::dto::{HeartbeatDto, HeartbeatNoteDto};
 
 #[derive(Default, Debug, Clone)]
 pub struct AppState {

@@ -20,12 +20,12 @@ use watcher::{EventType, FieldSelector};
 use crate::maestro::{models::Note, AppState};
 
 #[derive(Deserialize)]
-pub struct GetNotesQueryParams {
+struct GetNotesQueryParams {
     watch: Option<bool>,
     field_selector: Option<String>,
 }
 
-pub async fn get_notes(
+async fn get_notes(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<GetNotesQueryParams>,
 ) -> Response {
@@ -74,7 +74,7 @@ pub async fn get_notes(
         .into_response()
 }
 
-pub async fn get_note_by_name(
+async fn get_note_by_name(
     State(app_state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<Note>, StatusCode> {
@@ -84,10 +84,7 @@ pub async fn get_note_by_name(
     }
 }
 
-pub async fn stop_note(
-    State(app_state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-) -> StatusCode {
+async fn stop_note(State(app_state): State<Arc<AppState>>, Path(name): Path<String>) -> StatusCode {
     let repository = app_state.note_repository.lock().await;
     match repository.stop_note(&name).await {
         true => {
@@ -104,7 +101,7 @@ pub async fn stop_note(
     }
 }
 
-pub fn routes() -> Router<Arc<AppState>> {
+pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(get_notes))
         .route("/{name}", get(get_note_by_name))
