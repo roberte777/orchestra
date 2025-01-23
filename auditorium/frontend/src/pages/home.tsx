@@ -1,5 +1,5 @@
 import { useSymphonies } from "@/lib/SymphonyProvider";
-import { SymphonyItem } from "@/components/SymphonyItem";
+import { SymphonyItem } from "@/components/symphony-item";
 
 export default function Home() {
   const { trackedSymphonies } = useSymphonies();

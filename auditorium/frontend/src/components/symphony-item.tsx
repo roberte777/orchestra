@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { NoteItem } from "./NoteItem";
+import { NoteItem } from "./note-item";
 import { TrackedSymphony } from "@/lib/SymphonyProvider";
 import { CreateNote } from "./dialog/create-note";
 import { EditSymphony } from "./dialog/edit-symphony";

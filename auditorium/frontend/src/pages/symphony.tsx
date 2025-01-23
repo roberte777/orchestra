@@ -1,4 +1,4 @@
-import { SymphonyItem } from "@/components/SymphonyItem";
+import { SymphonyItem } from "@/components/symphony-item";
 import { useSymphonies } from "@/lib/SymphonyProvider";
 
 export default function Symphony({ name }: { name: string }) {
