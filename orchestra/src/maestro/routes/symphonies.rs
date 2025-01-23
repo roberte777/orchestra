@@ -46,18 +46,23 @@ pub async fn start_symphony(
             notes_repo.add_note(note).await;
             notes_repo.start_note(&note_name).await;
         }
-    }
-    let mut wm = app_state.watch_manager.lock().await;
-    for note in notes {
-        wm.notify_note(watcher::Event {
+        let mut wm = app_state.watch_manager.lock().await;
+        for note in notes {
+            wm.notify_note(watcher::Event {
+                event_type: watcher::EventType::Added,
+                resource: note,
+            });
+        }
+
+        let symphony = symphony_repo
+            .get_symphony_with_notes(&symphony_name)
+            .await
+            .expect("Symphony must be defined");
+        wm.notify_symphony(watcher::Event {
             event_type: watcher::EventType::Added,
-            resource: note,
+            resource: symphony,
         });
     }
-    wm.notify_symphony(watcher::Event {
-        event_type: watcher::EventType::Added,
-        resource: symphony,
-    });
 }
 
 // Stop a Symphony
@@ -92,6 +97,10 @@ pub async fn stop_symphony(
     symphony_repo.stop_symphony(&name).await;
 
     let mut wm = app_state.watch_manager.lock().await;
+    let symphony = symphony_repo
+        .get_symphony_with_notes(&symphony.name)
+        .await
+        .expect("Symphony should not be able to be missing");
     wm.notify_symphony(watcher::Event {
         event_type: watcher::EventType::Modified,
         resource: symphony,
@@ -112,32 +121,32 @@ pub async fn get_all_symphonies(
     Query(params): Query<GetSymphoniesQueryParams>,
 ) -> Response {
     let s_repo = state.symphony_repository.lock().await;
-    let n_repo = state.note_repository.lock().await;
-    let symphonies = s_repo.get_all_symphonies().await;
+    // let n_repo = state.note_repository.lock().await;
+    let symphonies = s_repo.get_all_symphonies_with_notes().await;
 
-    let mut final_symphonies = Vec::new();
-    for symphony in symphonies {
-        let mut notes = Vec::new();
-        for note in symphony.notes {
-            let note = n_repo.get_note(&note).await.unwrap();
-            notes.push(note);
-        }
-
-        final_symphonies.push(SymphonyReturn {
-            name: symphony.name,
-            notes,
-        });
-    }
+    // let mut final_symphonies = Vec::new();
+    // for symphony in symphonies {
+    //     let mut notes = Vec::new();
+    //     for note in symphony.notes {
+    //         let note = n_repo.get_note(&note).await.unwrap();
+    //         notes.push(note);
+    //     }
+    //
+    //     final_symphonies.push(SymphonyReturn {
+    //         name: symphony.name,
+    //         notes,
+    //     });
+    // }
 
     // Unified response and error handling for non-watching requests
     if !params.watch.unwrap_or(false) {
-        return Json(final_symphonies).into_response();
+        return Json(symphonies).into_response();
     }
 
     // Create the initial SSE event with the list of symphonies to populate the client's cache
     let initial_event = axum::response::sse::Event::default()
         .event("list")
-        .data(serde_json::to_string(&final_symphonies).unwrap_or_else(|_| "[]".to_string()));
+        .data(serde_json::to_string(&symphonies).unwrap_or_else(|_| "[]".to_string()));
 
     // Watching for updates
     let field_selector =

@@ -50,8 +50,12 @@ dependencies = [
  "mime_guess",
  "orchestra",
  "reqwest",
+ "reqwest-eventsource",
  "serde",
+ "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

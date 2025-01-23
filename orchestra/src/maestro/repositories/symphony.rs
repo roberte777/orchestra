@@ -1,10 +1,15 @@
-use crate::maestro::models::{SharedStore, Symphony, SymphonyState};
+use crate::maestro::{
+    dto::SymphonyWithNotes,
+    models::{SharedStore, Symphony, SymphonyState},
+};
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait SymphonyRepository: Send + Sync {
     async fn get_all_symphonies(&self) -> Vec<Symphony>;
+    async fn get_all_symphonies_with_notes(&self) -> Vec<SymphonyWithNotes>;
     async fn get_symphony(&self, name: &str) -> Option<Symphony>;
+    async fn get_symphony_with_notes(&self, name: &str) -> Option<SymphonyWithNotes>;
     async fn add_symphony(&self, symphony: Symphony);
     async fn stop_symphony(&self, name: &str) -> bool;
     async fn remove_symphony(&self, name: &str) -> bool;
@@ -27,8 +32,16 @@ impl SymphonyRepository for InMemorySymphonyRepository {
     async fn get_all_symphonies(&self) -> Vec<Symphony> {
         self.store.lock().await.get_all_symphonies()
     }
+
+    async fn get_all_symphonies_with_notes(&self) -> Vec<SymphonyWithNotes> {
+        self.store.lock().await.get_all_symphonies_with_notes()
+    }
     async fn get_symphony(&self, name: &str) -> Option<Symphony> {
         self.store.lock().await.get_symphony(name)
+    }
+
+    async fn get_symphony_with_notes(&self, name: &str) -> Option<SymphonyWithNotes> {
+        self.store.lock().await.get_symphony_with_notes(name)
     }
 
     async fn add_symphony(&self, symphony: Symphony) {

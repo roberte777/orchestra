@@ -5,6 +5,7 @@ use tokio::sync::{broadcast::Sender, Mutex};
 use tracked_symphonies::InMemoryAuditoriumStore;
 
 pub mod dto;
+pub mod symphony_subscriber;
 pub mod tracked_symphonies;
 
 #[derive(Clone)]
@@ -12,5 +13,5 @@ pub struct AppState {
     pub maestro_url: String,
     pub client: Client,
     pub tracked_symphonies: Arc<Mutex<InMemoryAuditoriumStore>>,
-    pub symphony_tx: Sender<String>,
+    pub symphony_tx: Sender<()>,
 }

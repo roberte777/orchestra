@@ -88,6 +88,7 @@ export const SymphoniesProvider: React.FC<PropsWithChildren> = ({
 
     websocket.onmessage = (event) => {
       const data: TrackedSymphony[] = JSON.parse(event.data);
+      console.log(data);
       setTrackedSymphonies(data);
     };
 

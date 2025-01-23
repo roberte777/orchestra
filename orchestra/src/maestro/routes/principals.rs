@@ -52,6 +52,10 @@ async fn principal_heartbeat(
 
             // remove symphony if stop requested and all notes gone
             if should_remove {
+                let symphony = symphony_repo
+                    .get_symphony_with_notes(&symphony_name)
+                    .await
+                    .expect("Symphony should not be able to be missing");
                 symphony_repo.remove_symphony(&symphony_name).await;
                 let event = watcher::Event {
                     event_type: EventType::Deleted,
@@ -75,9 +79,18 @@ async fn principal_heartbeat(
                 note_repo.update_note(note_update.clone()).await;
                 let event = watcher::Event {
                     event_type: EventType::Modified,
-                    resource: note_update,
+                    resource: note_update.clone(),
                 };
                 app_state.watch_manager.lock().await.notify_note(event);
+                let symphony = symphony_repo
+                    .get_symphony_with_notes(&note_update.symphony)
+                    .await
+                    .unwrap();
+                let event = watcher::Event {
+                    event_type: EventType::Modified,
+                    resource: symphony,
+                };
+                app_state.watch_manager.lock().await.notify_symphony(event);
             }
         }
     }
