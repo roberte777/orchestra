@@ -76,3 +76,94 @@ async fn get_notes(
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/", get(get_notes))
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use axum::http::StatusCode;
+    use http_body_util::BodyExt;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    use crate::maestro::repositories::note::InMemoryNoteRepository;
+    use crate::maestro::repositories::principal::InMemoryPrincipalRepository;
+    use crate::maestro::repositories::symphony::InMemorySymphonyRepository;
+    use crate::maestro::{AppState, WatchManager};
+    use crate::models::{Note, SharedStore, SharedStoreExt};
+    use crate::{NoteState, RestartPolicy};
+
+    fn create_test_state() -> Arc<AppState> {
+        let data_store = SharedStore::new_shared();
+        let note_repository = Box::new(InMemoryNoteRepository::new(data_store.clone()));
+        let symphony_repository = Box::new(InMemorySymphonyRepository::new(data_store.clone()));
+        let principal_repository = Box::new(InMemoryPrincipalRepository::new(data_store.clone()));
+        let watch_manager = WatchManager::default();
+
+        Arc::new(AppState::new(
+            note_repository,
+            symphony_repository,
+            principal_repository,
+            watch_manager,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_get_notes_non_watching() {
+        let app_state = create_test_state();
+        let app = routes().with_state(app_state.clone());
+
+        // Add mock notes
+        {
+            let note_repo = app_state.note_repository.lock().await;
+            note_repo
+                .add_note(Note {
+                    name: "Note 1".into(),
+                    symphony: "Symphony 1".into(),
+                    description: "desc".into(),
+                    host: "host".into(),
+                    command: "ping".into(),
+                    env: HashMap::default(),
+                    args: Vec::new(),
+                    restart_policy: RestartPolicy::Never,
+                    state: NoteState::Pending,
+                })
+                .await;
+            note_repo
+                .add_note(Note {
+                    name: "Note 2".into(),
+                    symphony: "Symphony 2".into(),
+                    description: "desc".into(),
+                    host: "host".into(),
+                    command: "ping".into(),
+                    env: HashMap::default(),
+                    args: Vec::new(),
+                    restart_policy: RestartPolicy::Never,
+                    state: NoteState::Pending,
+                })
+                .await;
+        }
+
+        // Perform a GET request without watching
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Assert the response status and body
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let notes: Vec<Note> = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|note| note.name == "Note 1"));
+        assert!(notes.iter().any(|note| note.name == "Note 2"));
+    }
+}
