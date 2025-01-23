@@ -16,7 +16,7 @@ fn default_config_path() -> PathBuf {
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(name = "Maestro", version, about, long_about = None)]
-pub struct Args {
+pub struct MaestroArgs {
     /// Path to the maestro config file
     #[arg(short, long, default_value_os_t = default_config_path())]
     pub config: PathBuf,
