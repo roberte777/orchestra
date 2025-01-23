@@ -4,12 +4,12 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait NoteRepository: Send + Sync {
     async fn get_all_notes(&self) -> Vec<Note>;
-    async fn get_note(&self, name: &str) -> Option<Note>;
+    async fn get_note(&self, symphony: &str, name: &str) -> Option<Note>;
     async fn add_note(&self, note: Note);
     async fn update_note(&self, note: Note);
-    async fn stop_note(&self, name: &str) -> bool;
-    async fn start_note(&self, name: &str) -> bool;
-    async fn remove_note(&self, name: &str) -> bool;
+    async fn stop_note(&self, symphony: &str, name: &str) -> bool;
+    async fn start_note(&self, symphony: &str, name: &str) -> bool;
+    async fn remove_note(&self, symphony: &str, name: &str) -> bool;
 }
 
 pub struct InMemoryNoteRepository {
@@ -27,8 +27,8 @@ impl NoteRepository for InMemoryNoteRepository {
     async fn get_all_notes(&self) -> Vec<Note> {
         self.store.lock().await.get_all_notes()
     }
-    async fn get_note(&self, name: &str) -> Option<Note> {
-        self.store.lock().await.get_note(name)
+    async fn get_note(&self, symphony: &str, name: &str) -> Option<Note> {
+        self.store.lock().await.get_note(symphony, name)
     }
 
     async fn add_note(&self, note: Note) {
@@ -42,26 +42,26 @@ impl NoteRepository for InMemoryNoteRepository {
             .expect("Should only be updating notes that exist");
     }
 
-    async fn stop_note(&self, name: &str) -> bool {
+    async fn stop_note(&self, symphony: &str, name: &str) -> bool {
         let mut store = self.store.lock().await;
-        let Some(mut note) = store.get_note(name) else {
+        let Some(mut note) = store.get_note(symphony, name) else {
             return false;
         };
 
         note.state = NoteState::Terminating;
         store.update_note(note).is_ok()
     }
-    async fn start_note(&self, name: &str) -> bool {
+    async fn start_note(&self, symphony: &str, name: &str) -> bool {
         let mut store = self.store.lock().await;
-        let Some(mut note) = store.get_note(name) else {
+        let Some(mut note) = store.get_note(symphony, name) else {
             return false;
         };
 
         note.state = NoteState::Pending;
         store.update_note(note).is_ok()
     }
-    async fn remove_note(&self, name: &str) -> bool {
-        self.store.lock().await.remove_note(name);
+    async fn remove_note(&self, symphony: &str, name: &str) -> bool {
+        self.store.lock().await.remove_note(symphony, name);
         true
     }
 }

@@ -13,7 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::maestro::routes::principals::{HeartbeatDto, HeartbeatNoteDto};
+use crate::maestro::dto::{HeartbeatDto, HeartbeatNoteDto};
 
 #[derive(Default, Debug, Clone)]
 pub struct AppState {
@@ -39,7 +39,7 @@ impl HeartbeatActor {
     }
 
     pub fn start(&mut self, state: AppState) {
-        let mut interval = time::interval(Duration::from_secs(5));
+        let mut interval = time::interval(Duration::from_millis(500));
         let cancel = CancellationToken::new();
         let child = cancel.child_token();
         let url = self.url.clone();
@@ -87,6 +87,7 @@ async fn heartbeat_task(
     let notes = notes
         .iter()
         .map(|n| HeartbeatNoteDto {
+            symphony: n.1.note.symphony.clone(),
             name: n.1.note.name.clone(),
             state: n.1.note.state.clone(),
         })

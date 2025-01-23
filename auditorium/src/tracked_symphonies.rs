@@ -1,21 +1,16 @@
-use crate::{
-    dto::{CreateSymphony, MaestroSymphony},
-    AppState,
-};
+use crate::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post, put},
+    routing::{get, put},
     Json, Router,
 };
-use orchestra::maestro::models::{Note, NoteState, RestartPolicy};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    ops::Not,
-    sync::{Arc, Mutex},
+use orchestra::{
+    maestro::models::{NoteState, RestartPolicy},
+    CreateSymphony, SymphonyWithNotes,
 };
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// We can define new "meta-states" for how the Auditorium sees a symphony's or note's status.
 /// E.g., if the symphony does not exist in Maestro, we mark it as "MissingInMaestro".
@@ -108,8 +103,6 @@ impl InMemoryAuditoriumStore {
     }
 }
 
-/// We’ll store an `Arc<Mutex<InMemoryAuditoriumStore>>` in `AppState`.
-
 /// Merge the user’s tracked list with the “real state” from Maestro.
 async fn fetch_and_merge_symphonies(app_state: &AppState) -> Vec<TrackedSymphony> {
     // 1) Copy the user-tracked symphonies from the in-memory store
@@ -122,10 +115,10 @@ async fn fetch_and_merge_symphonies(app_state: &AppState) -> Vec<TrackedSymphony
     let url = format!("{}/api/v1/symphonies", app_state.maestro_url);
     let result = app_state.client.get(url).send().await;
 
-    let maestro_symphonies: Option<Vec<MaestroSymphony>> = match result {
+    let maestro_symphonies: Option<Vec<SymphonyWithNotes>> = match result {
         Ok(resp) => {
             if resp.status().is_success() {
-                match resp.json::<Vec<MaestroSymphony>>().await {
+                match resp.json::<Vec<SymphonyWithNotes>>().await {
                     Ok(data) => Some(data),
                     Err(e) => {
                         eprintln!("Failed to decode maestro symphonies: {:?}", e);

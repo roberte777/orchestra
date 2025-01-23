@@ -1,13 +1,13 @@
 pub mod dto;
 pub mod models;
-pub mod repositories;
-pub mod routes;
+pub(crate) mod repositories;
+pub(crate) mod routes;
 
 use std::sync::Arc;
 
 use axum::{extract::State, routing::get, Router};
 use dto::SymphonyWithNotes;
-use models::{Note, Principal, SharedStore, SharedStoreExt, Symphony};
+use models::{Note, Principal, SharedStore, SharedStoreExt};
 use repositories::{
     note::{InMemoryNoteRepository, NoteRepository},
     principal::{InMemoryPrincipalRepository, PrincipalRepository},

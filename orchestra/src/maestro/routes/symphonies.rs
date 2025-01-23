@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     extract::{Path, Query, State},
@@ -8,65 +8,69 @@ use axum::{
     Json, Router,
 };
 use futures::{stream, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::debug;
 use watcher::{Event, EventType, FieldSelector};
 
 use crate::maestro::{
-    models::{Note, NoteState, RestartPolicy, Symphony, SymphonyState},
+    dto::CreateSymphony,
+    models::{Note, SymphonyState},
     AppState,
 };
 
 /// Create and start a Symphony
-pub async fn start_symphony(
+async fn start_symphony(
     State(app_state): State<Arc<AppState>>,
-    Json(symphony_dto): Json<SymphonyDto>,
-) {
+    Json(symphony_dto): Json<CreateSymphony>,
+) -> impl IntoResponse {
     let symphony = symphony_dto.to_data_obj();
     let notes = symphony_dto
         .notes
         .iter()
         .map(|n| n.to_data_obj(&symphony.name))
         .collect::<Vec<Note>>();
-    {
-        let symphony_repo = app_state.symphony_repository.lock().await;
-        let notes_repo = app_state.note_repository.lock().await;
-        let symphony_name = symphony.name();
-        // check if symphony exists
-        if symphony_repo.get_symphony(&symphony_name).await.is_some() {
-            return;
-        }
-        // Create and start symphony
-        symphony_repo.add_symphony(symphony.clone()).await;
-        symphony_repo.start_symphony(&symphony_name).await;
-        // Create and start notes in the symphony
-        for note in notes.clone() {
-            let note_name = note.name.clone();
-            notes_repo.add_note(note).await;
-            notes_repo.start_note(&note_name).await;
-        }
-        let mut wm = app_state.watch_manager.lock().await;
-        for note in notes {
-            wm.notify_note(watcher::Event {
-                event_type: watcher::EventType::Added,
-                resource: note,
-            });
-        }
+    let symphony_repo = app_state.symphony_repository.lock().await;
+    let notes_repo = app_state.note_repository.lock().await;
 
-        let symphony = symphony_repo
-            .get_symphony_with_notes(&symphony_name)
-            .await
-            .expect("Symphony must be defined");
-        wm.notify_symphony(watcher::Event {
+    // check for conflicts
+    let symphony_name = symphony.name();
+    // check if symphony exists
+    if symphony_repo.get_symphony(&symphony_name).await.is_some() {
+        return StatusCode::CONFLICT;
+    }
+
+    // Create and start symphony
+    symphony_repo.add_symphony(symphony.clone()).await;
+    symphony_repo.start_symphony(&symphony_name).await;
+    // Create and start notes in the symphony
+    for note in notes.clone() {
+        let note_name = note.name.clone();
+        let note_symphony = note.symphony.clone();
+        notes_repo.add_note(note).await;
+        notes_repo.start_note(&note_symphony, &note_name).await;
+    }
+    let mut wm = app_state.watch_manager.lock().await;
+    for note in notes {
+        wm.notify_note(watcher::Event {
             event_type: watcher::EventType::Added,
-            resource: symphony,
+            resource: note,
         });
     }
+
+    let symphony = symphony_repo
+        .get_symphony_with_notes(&symphony_name)
+        .await
+        .expect("Symphony must be defined");
+    wm.notify_symphony(watcher::Event {
+        event_type: watcher::EventType::Added,
+        resource: symphony,
+    });
+    StatusCode::OK
 }
 
 // Stop a Symphony
-pub async fn stop_symphony(
+async fn stop_symphony(
     Path(name): Path<String>,
     State(app_state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -74,16 +78,16 @@ pub async fn stop_symphony(
     let notes_repo = app_state.note_repository.lock().await;
     let symphony = match symphony_repo.get_symphony(&name).await {
         Some(symphony) => symphony,
-        None => return StatusCode::INTERNAL_SERVER_ERROR,
+        None => return StatusCode::NOT_FOUND,
     };
     // if already stopping, return OK with no work
     if matches!(symphony.state(), SymphonyState::Terminating) {
         return StatusCode::OK;
     }
     for note in symphony.notes() {
-        let success = notes_repo.stop_note(&note).await;
+        let success = notes_repo.stop_note(&symphony.name, &note).await;
         if success {
-            let note = notes_repo.get_note(&note).await.unwrap();
+            let note = notes_repo.get_note(&symphony.name, &note).await.unwrap();
             let event = Event {
                 event_type: EventType::Modified,
                 resource: note,
@@ -109,34 +113,20 @@ pub async fn stop_symphony(
     StatusCode::OK
 }
 
-pub async fn get_notes_for_symphony() {}
+async fn get_notes_for_symphony() {}
 
 #[derive(Deserialize)]
-pub struct GetSymphoniesQueryParams {
+struct GetSymphoniesQueryParams {
     watch: Option<bool>,
     field_selector: Option<String>,
 }
-pub async fn get_all_symphonies(
+
+async fn get_all_symphonies(
     State(state): State<Arc<AppState>>,
     Query(params): Query<GetSymphoniesQueryParams>,
 ) -> Response {
     let s_repo = state.symphony_repository.lock().await;
-    // let n_repo = state.note_repository.lock().await;
     let symphonies = s_repo.get_all_symphonies_with_notes().await;
-
-    // let mut final_symphonies = Vec::new();
-    // for symphony in symphonies {
-    //     let mut notes = Vec::new();
-    //     for note in symphony.notes {
-    //         let note = n_repo.get_note(&note).await.unwrap();
-    //         notes.push(note);
-    //     }
-    //
-    //     final_symphonies.push(SymphonyReturn {
-    //         name: symphony.name,
-    //         notes,
-    //     });
-    // }
 
     // Unified response and error handling for non-watching requests
     if !params.watch.unwrap_or(false) {
@@ -180,13 +170,7 @@ pub async fn get_all_symphonies(
         .into_response()
 }
 
-#[derive(Serialize)]
-struct SymphonyReturn {
-    name: String,
-    notes: Vec<Note>,
-}
-
-pub fn routes() -> Router<Arc<AppState>> {
+pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/{symphony_name}/notes", get(get_notes_for_symphony))
         .route("/", post(start_symphony))
@@ -194,46 +178,412 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/{name}/stop", post(stop_symphony))
 }
 
-#[derive(Clone, Deserialize, Debug)]
-pub struct NoteDto {
-    pub name: String,
-    pub description: String,
-    pub host: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: HashMap<String, String>,
-    pub restart_policy: RestartPolicy,
-}
+#[cfg(test)]
+mod test {
+    use std::{collections::HashMap, sync::Arc};
 
-impl NoteDto {
-    pub fn to_data_obj(&self, symphony_name: &str) -> Note {
-        Note {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            host: self.host.clone(),
-            env: self.env.clone(),
-            command: self.command.clone(),
-            args: self.args.clone(),
-            restart_policy: self.restart_policy.clone(),
-            state: NoteState::Pending,
-            symphony: symphony_name.to_string(),
-        }
+    use axum::http::StatusCode;
+    use http_body_util::BodyExt;
+    use tokio_stream::StreamExt;
+    use tower::ServiceExt;
+    use tracing_subscriber;
+
+    use crate::{
+        maestro::{
+            dto::CreateSymphony,
+            models::SymphonyState,
+            repositories::{
+                note::InMemoryNoteRepository, principal::InMemoryPrincipalRepository,
+                symphony::InMemorySymphonyRepository,
+            },
+            AppState, WatchManager,
+        },
+        models::{SharedStore, SharedStoreExt},
+        CreateNote, Note, NoteState, RestartPolicy,
+    };
+    fn create_state() -> Arc<AppState> {
+        let data_store = SharedStore::new_shared();
+        let note_repository = Box::new(InMemoryNoteRepository::new(data_store.clone()));
+        let symphony_repository = Box::new(InMemorySymphonyRepository::new(data_store.clone()));
+        let principal_repository = Box::new(InMemoryPrincipalRepository::new(data_store.clone()));
+        let watch_manager = WatchManager::default();
+
+        Arc::new(AppState::new(
+            note_repository,
+            symphony_repository,
+            principal_repository,
+            watch_manager,
+        ))
     }
-}
 
-#[derive(Clone, Deserialize)]
-pub struct SymphonyDto {
-    pub name: String,
-    pub notes: Vec<NoteDto>,
-}
+    #[tokio::test]
+    async fn test_start_symphony() {
+        tracing_subscriber::fmt::try_init().ok();
 
-impl SymphonyDto {
-    pub fn to_data_obj(&self) -> Symphony {
-        let notes = self.notes.iter().map(|n| n.name.clone()).collect();
-        Symphony {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let symphony_dto = CreateSymphony {
+            name: "Test Symphony".into(),
+            notes: vec![],
+        };
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_string(&symphony_dto).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let symphony_repo = app_state.symphony_repository.lock().await;
+        let symphony = symphony_repo.get_symphony("Test Symphony").await;
+        assert!(symphony.is_some());
+        assert_eq!(*symphony.unwrap().state(), SymphonyState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_stop_symphony() {
+        tracing_subscriber::fmt::try_init().ok();
+
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let symphony_dto = CreateSymphony {
+            name: "Test Symphony".into(),
+            notes: vec![],
+        };
+
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo.add_symphony(symphony_dto.to_data_obj()).await;
+        }
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/Test%20Symphony/stop")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let symphony_repo = app_state.symphony_repository.lock().await;
+        let symphony = symphony_repo.get_symphony("Test Symphony").await;
+        assert!(symphony.is_some());
+        assert_eq!(*symphony.unwrap().state(), SymphonyState::Terminating);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_symphonies() {
+        tracing_subscriber::fmt::try_init().ok();
+
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let symphony_dto = CreateSymphony {
+            name: "Test Symphony".into(),
+            notes: vec![],
+        };
+
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo.add_symphony(symphony_dto.to_data_obj()).await;
+        }
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let symphonies: Vec<CreateSymphony> = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(symphonies.len(), 1);
+        assert_eq!(symphonies[0].name, "Test Symphony");
+    }
+
+    #[tokio::test]
+    async fn test_sse_get_all_symphonies() {
+        tracing_subscriber::fmt::try_init().ok();
+
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let symphony_dto = CreateSymphony {
+            name: "Test Symphony".into(),
+            notes: vec![],
+        };
+
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo.add_symphony(symphony_dto.to_data_obj()).await;
+        }
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/?watch=true")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Process the streaming response
+        let mut body_stream = response.into_body().into_data_stream();
+        let mut buffer = String::new();
+
+        while let Some(chunk) = body_stream.next().await {
+            let chunk = chunk.unwrap(); // Handle chunk errors appropriately
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            if buffer.contains("Test Symphony") {
+                // Test passes as soon as the expected data is found
+                return;
+            }
+        }
+
+        // If the loop completes without finding the expected data, fail the test
+        panic!("SSE stream did not contain 'Test Symphony'");
+    }
+
+    #[tokio::test]
+    async fn test_start_existing_symphony() {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let symphony_dto = CreateSymphony {
+            name: "Duplicate Symphony".into(),
+            notes: vec![],
+        };
+
+        // Add the symphony first
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo.add_symphony(symphony_dto.to_data_obj()).await;
+        }
+
+        // Attempt to start the same symphony again
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_string(&symphony_dto).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Assert that the request fails or returns the expected status code
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        // Verify the symphony wasn't overwritten or started again
+        let symphony_repo = app_state.symphony_repository.lock().await;
+        let symphony = symphony_repo.get_symphony("Duplicate Symphony").await;
+        assert!(symphony.is_some());
+        assert_eq!(*symphony.unwrap().state(), SymphonyState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_stop_nonexistent_symphony() {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/Nonexistent%20Symphony/stop")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Assert that the response indicates failure
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    #[tokio::test]
+    async fn test_start_symphony_invalid_json() {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let invalid_json = "{ invalid json }"; // Malformed JSON
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(invalid_json))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Assert that the response indicates a bad request
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    #[tokio::test]
+    async fn test_double_stop_symphony() {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        let symphony_dto = CreateSymphony {
+            name: "Test Symphony".into(),
+            notes: vec![],
+        };
+
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo.add_symphony(symphony_dto.to_data_obj()).await;
+            symphony_repo.stop_symphony("Test Symphony").await;
+        }
+
+        // Attempt to stop the symphony again
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/Test%20Symphony/stop")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Assert that the response is still OK
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_stop_symphony_does_not_affect_notes_in_other_symphony() {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        // Create two symphonies with notes that share the same name
+        let symphony1_dto = CreateSymphony {
+            name: "Symphony 1".into(),
+            notes: vec![CreateNote {
+                name: "Shared Note".into(),
+                description: "desc".into(),
+                host: "host".into(),
+                command: "ping".into(),
+                env: HashMap::default(),
+                args: Vec::new(),
+                restart_policy: RestartPolicy::Never,
+            }],
+        };
+        let notes = vec![CreateNote {
+            name: "Shared Note".into(),
+            description: "desc".into(),
+            host: "host".into(),
+            command: "ping".into(),
+            env: HashMap::default(),
+            args: Vec::new(),
+            restart_policy: RestartPolicy::Never,
+        }];
+        let symphony2_dto = CreateSymphony {
+            name: "Symphony 2".into(),
             notes,
-            name: self.name.clone(),
-            state: SymphonyState::Running,
+        };
+
+        // Start both symphonies
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo
+                .add_symphony(symphony1_dto.to_data_obj())
+                .await;
+            symphony_repo
+                .add_symphony(symphony2_dto.to_data_obj())
+                .await;
+
+            let notes_repo = app_state.note_repository.lock().await;
+            notes_repo
+                .add_note(Note {
+                    name: "Shared Note".to_string(),
+                    symphony: "Symphony 1".to_string(),
+                    description: "desc".into(),
+                    host: "host".into(),
+                    command: "ping".into(),
+                    env: HashMap::default(),
+                    args: Vec::new(),
+                    restart_policy: RestartPolicy::Never,
+                    state: crate::NoteState::Pending,
+                })
+                .await;
+            notes_repo
+                .add_note(Note {
+                    name: "Shared Note".to_string(),
+                    symphony: "Symphony 2".to_string(),
+                    description: "desc".into(),
+                    host: "host".into(),
+                    command: "ping".into(),
+                    env: HashMap::default(),
+                    args: Vec::new(),
+                    restart_policy: RestartPolicy::Never,
+                    state: crate::NoteState::Pending,
+                })
+                .await;
+        }
+
+        // Stop Symphony 1
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/Symphony%201/stop")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the note for Symphony 1 is stopped
+        {
+            let notes_repo = app_state.note_repository.lock().await;
+            let note = notes_repo.get_note("Symphony 1", "Shared Note").await;
+            assert!(note.is_some());
+            assert!(matches!(note.unwrap().state, NoteState::Terminating));
+        }
+
+        // Verify the note for Symphony 2 is NOT stopped
+        {
+            let notes_repo = app_state.note_repository.lock().await;
+            let note = notes_repo.get_note("Symphony 2", "Shared Note").await;
+            assert!(note.is_some());
+            assert!(matches!(note.unwrap().state, NoteState::Pending));
         }
     }
 }

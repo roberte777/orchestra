@@ -62,7 +62,7 @@ impl Watchable for Note {
 // the states a symphony can be in.
 // to it. It moves to terminating while waiting for all notes to be terminated
 // by principals. No new notes can be added
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SymphonyState {
     // A symphony is running as soon as it is in the database and notes can be
     // added to it.
@@ -139,10 +139,13 @@ impl Watchable for Principal {
         }
     }
 }
+
+pub type NoteKey = (String, String);
+
 // Define an in-memory store struct with HashMaps to store each entity type
 #[derive(Default)]
-pub struct InMemoryStore {
-    notes: HashMap<String, Note>,
+pub(crate) struct InMemoryStore {
+    notes: HashMap<NoteKey, Note>,
     symphonies: HashMap<String, Symphony>,
     principals: HashMap<String, Principal>,
 }
@@ -159,7 +162,8 @@ impl InMemoryStore {
 
     // Methods to add data to the store
     pub fn add_note(&mut self, note: Note) {
-        self.notes.insert(note.name.clone(), note);
+        self.notes
+            .insert((note.symphony.clone(), note.name.clone()), note);
     }
 
     pub fn add_symphony(&mut self, symphony: Symphony) {
@@ -171,8 +175,8 @@ impl InMemoryStore {
     }
 
     // Methods to retrieve data
-    pub fn get_note(&self, name: &str) -> Option<Note> {
-        self.notes.get(name).cloned()
+    pub fn get_note(&self, symphony: &str, name: &str) -> Option<Note> {
+        self.notes.get(&(symphony.into(), name.into())).cloned()
     }
 
     pub fn get_symphony(&self, name: &str) -> Option<Symphony> {
@@ -180,19 +184,15 @@ impl InMemoryStore {
     }
 
     pub fn get_symphony_with_notes(&self, name: &str) -> Option<SymphonyWithNotes> {
-        let symphony = match self.symphonies.get(name).cloned() {
-            Some(s) => s,
-            None => return None,
-        };
+        let symphony = self.symphonies.get(name).cloned()?;
         let mut notes = Vec::new();
         for note in symphony.notes() {
-            let note = self.get_note(&note).unwrap();
+            let note = self.get_note(&symphony.name, &note).unwrap();
             notes.push(note);
         }
         let final_symphony = SymphonyWithNotes {
             name: symphony.name.clone(),
             notes,
-            state: symphony.state.clone(),
         };
         Some(final_symphony)
     }
@@ -221,20 +221,20 @@ impl InMemoryStore {
     }
 
     // Methods to update data (example for notes)
-    pub fn update_note_state(&mut self, name: &str, new_state: NoteState) {
-        if let Some(note) = self.notes.get_mut(name) {
+    pub fn _update_note_state(&mut self, symphony: &str, name: &str, new_state: NoteState) {
+        if let Some(note) = self.notes.get_mut(&(symphony.into(), name.into())) {
             note.state = new_state;
         }
     }
 
     // Update or replace a Note completely
     pub fn update_note(&mut self, updated_note: Note) -> Result<(), String> {
-        let name = &updated_note.name;
-        if self.notes.contains_key(name) {
-            self.notes.insert(name.clone(), updated_note);
+        let key = &(updated_note.symphony.clone(), updated_note.name.clone());
+        if self.notes.contains_key(key) {
+            self.notes.insert(key.clone(), updated_note);
             Ok(())
         } else {
-            Err(format!("Note '{}' not found", name))
+            Err(format!("Note '{}:{}' not found", key.0, key.1))
         }
     }
 
@@ -261,21 +261,21 @@ impl InMemoryStore {
     }
 
     // Methods to remove data if needed
-    pub fn remove_note(&mut self, name: &str) {
-        self.notes.remove(name);
+    pub fn remove_note(&mut self, symphony: &str, name: &str) {
+        self.notes.remove(&(symphony.into(), name.into()));
     }
 
     pub fn remove_symphony(&mut self, name: &str) {
         self.symphonies.remove(name);
     }
 
-    pub fn remove_principal(&mut self, host: &str) {
+    pub fn _remove_principal(&mut self, host: &str) {
         self.principals.remove(host);
     }
 }
 
 // To ensure safe concurrent access, wrap the InMemoryStore in an Arc<Mutex<>>
-pub type SharedStore = Arc<Mutex<InMemoryStore>>;
+pub(crate) type SharedStore = Arc<Mutex<InMemoryStore>>;
 
 pub trait SharedStoreExt {
     fn new_shared() -> Self;
