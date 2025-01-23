@@ -46,8 +46,9 @@ async fn start_symphony(
     // Create and start notes in the symphony
     for note in notes.clone() {
         let note_name = note.name.clone();
+        let note_symphony = note.symphony.clone();
         notes_repo.add_note(note).await;
-        notes_repo.start_note(&note_name).await;
+        notes_repo.start_note(&note_symphony, &note_name).await;
     }
     let mut wm = app_state.watch_manager.lock().await;
     for note in notes {
@@ -84,9 +85,9 @@ async fn stop_symphony(
         return StatusCode::OK;
     }
     for note in symphony.notes() {
-        let success = notes_repo.stop_note(&note).await;
+        let success = notes_repo.stop_note(&symphony.name, &note).await;
         if success {
-            let note = notes_repo.get_note(&note).await.unwrap();
+            let note = notes_repo.get_note(&symphony.name, &note).await.unwrap();
             let event = Event {
                 event_type: EventType::Modified,
                 resource: note,
@@ -179,7 +180,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use axum::http::StatusCode;
     use http_body_util::BodyExt;
@@ -198,6 +199,7 @@ mod test {
             AppState, WatchManager,
         },
         models::{SharedStore, SharedStoreExt},
+        CreateNote, Note, NoteState, RestartPolicy,
     };
     fn create_state() -> Arc<AppState> {
         let data_store = SharedStore::new_shared();
@@ -481,5 +483,107 @@ mod test {
 
         // Assert that the response is still OK
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_stop_symphony_does_not_affect_notes_in_other_symphony() {
+        let app_state = create_state();
+        let app = super::routes().with_state(app_state.clone());
+
+        // Create two symphonies with notes that share the same name
+        let symphony1_dto = CreateSymphony {
+            name: "Symphony 1".into(),
+            notes: vec![CreateNote {
+                name: "Shared Note".into(),
+                description: "desc".into(),
+                host: "host".into(),
+                command: "ping".into(),
+                env: HashMap::default(),
+                args: Vec::new(),
+                restart_policy: RestartPolicy::Never,
+            }],
+        };
+        let notes = vec![CreateNote {
+            name: "Shared Note".into(),
+            description: "desc".into(),
+            host: "host".into(),
+            command: "ping".into(),
+            env: HashMap::default(),
+            args: Vec::new(),
+            restart_policy: RestartPolicy::Never,
+        }];
+        let symphony2_dto = CreateSymphony {
+            name: "Symphony 2".into(),
+            notes,
+        };
+
+        // Start both symphonies
+        {
+            let symphony_repo = app_state.symphony_repository.lock().await;
+            symphony_repo
+                .add_symphony(symphony1_dto.to_data_obj())
+                .await;
+            symphony_repo
+                .add_symphony(symphony2_dto.to_data_obj())
+                .await;
+
+            let notes_repo = app_state.note_repository.lock().await;
+            notes_repo
+                .add_note(Note {
+                    name: "Shared Note".to_string(),
+                    symphony: "Symphony 1".to_string(),
+                    description: "desc".into(),
+                    host: "host".into(),
+                    command: "ping".into(),
+                    env: HashMap::default(),
+                    args: Vec::new(),
+                    restart_policy: RestartPolicy::Never,
+                    state: crate::NoteState::Pending,
+                })
+                .await;
+            notes_repo
+                .add_note(Note {
+                    name: "Shared Note".to_string(),
+                    symphony: "Symphony 2".to_string(),
+                    description: "desc".into(),
+                    host: "host".into(),
+                    command: "ping".into(),
+                    env: HashMap::default(),
+                    args: Vec::new(),
+                    restart_policy: RestartPolicy::Never,
+                    state: crate::NoteState::Pending,
+                })
+                .await;
+        }
+
+        // Stop Symphony 1
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/Symphony%201/stop")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the note for Symphony 1 is stopped
+        {
+            let notes_repo = app_state.note_repository.lock().await;
+            let note = notes_repo.get_note("Symphony 1", "Shared Note").await;
+            assert!(note.is_some());
+            assert!(matches!(note.unwrap().state, NoteState::Terminating));
+        }
+
+        // Verify the note for Symphony 2 is NOT stopped
+        {
+            let notes_repo = app_state.note_repository.lock().await;
+            let note = notes_repo.get_note("Symphony 2", "Shared Note").await;
+            assert!(note.is_some());
+            assert!(matches!(note.unwrap().state, NoteState::Pending));
+        }
     }
 }

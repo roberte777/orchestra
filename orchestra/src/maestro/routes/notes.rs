@@ -74,36 +74,35 @@ async fn get_notes(
         .into_response()
 }
 
-async fn get_note_by_name(
-    State(app_state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-) -> Result<Json<Note>, StatusCode> {
-    match app_state.note_repository.lock().await.get_note(&name).await {
-        Some(note) => Ok(Json(note)),
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-async fn stop_note(State(app_state): State<Arc<AppState>>, Path(name): Path<String>) -> StatusCode {
-    let repository = app_state.note_repository.lock().await;
-    match repository.stop_note(&name).await {
-        true => {
-            let note = repository.get_note(&name).await.unwrap();
-            let event = watcher::Event {
-                event_type: EventType::Modified,
-                resource: note,
-            };
-            app_state.watch_manager.lock().await.notify_note(event);
-
-            StatusCode::OK
-        }
-        false => StatusCode::NOT_FOUND,
-    }
-}
+// async fn get_note_by_name(
+//     State(app_state): State<Arc<AppState>>,
+//     Path(name): Path<String>,
+// ) -> Result<Json<Note>, StatusCode> {
+//     match app_state.note_repository.lock().await.get_note(&name).await {
+//         Some(note) => Ok(Json(note)),
+//         None => Err(StatusCode::NOT_FOUND),
+//     }
+// }
+//
+// async fn stop_note(State(app_state): State<Arc<AppState>>, Path(name): Path<String>) -> StatusCode {
+//     let repository = app_state.note_repository.lock().await;
+//     match repository.stop_note(&name).await {
+//         true => {
+//             let note = repository.get_note(&name).await.unwrap();
+//             let event = watcher::Event {
+//                 event_type: EventType::Modified,
+//                 resource: note,
+//             };
+//             app_state.watch_manager.lock().await.notify_note(event);
+//
+//             StatusCode::OK
+//         }
+//         false => StatusCode::NOT_FOUND,
+//     }
+// }
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/", get(get_notes))
-        .route("/{name}", get(get_note_by_name))
-        .route("/{name}/stop", patch(stop_note))
+    Router::new().route("/", get(get_notes))
+    // .route("/{name}", get(get_note_by_name))
+    // .route("/{name}/stop", patch(stop_note))
 }

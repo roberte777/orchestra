@@ -30,7 +30,7 @@ async fn principal_heartbeat(
         // remove terminated notes from state
         if matches!(note.state, NoteState::Terminated) {
             // collect data
-            let note = match note_repo.get_note(&note.name).await {
+            let note = match note_repo.get_note(&heartbeat.name, &note.name).await {
                 Some(note) => note,
                 None => continue,
             };
@@ -43,7 +43,7 @@ async fn principal_heartbeat(
                 && symphony.notes().is_empty();
             _ = symphony_repo.update_symphony(symphony.clone()).await;
             //update note
-            note_repo.remove_note(&note.name).await;
+            note_repo.remove_note(&heartbeat.name, &note.name).await;
             let event = watcher::Event {
                 event_type: EventType::Deleted,
                 resource: note,
@@ -64,7 +64,7 @@ async fn principal_heartbeat(
                 app_state.watch_manager.lock().await.notify_symphony(event);
             }
         } else {
-            let mut note_update = match note_repo.get_note(&note.name).await {
+            let mut note_update = match note_repo.get_note(&heartbeat.name, &note.name).await {
                 Some(n) => n,
                 None => {
                     warn!(
