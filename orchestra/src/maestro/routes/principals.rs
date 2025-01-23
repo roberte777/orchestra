@@ -129,25 +129,21 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::maestro::repositories::symphony::InMemorySymphonyRepository;
     use crate::models::{SharedStore, SharedStoreExt};
     use crate::{
         maestro::{
-            models::{InMemoryStore, Note, NoteState, Principal, PrincipalState, RestartPolicy},
-            repositories::{
-                note::{InMemoryNoteRepository, NoteRepository},
-                principal::{InMemoryPrincipalRepository, PrincipalRepository},
-                symphony::{InMemorySymphonyRepository, SymphonyRepository},
-            },
+            models::{Note, NoteState, Principal, PrincipalState, RestartPolicy},
+            repositories::{note::InMemoryNoteRepository, principal::InMemoryPrincipalRepository},
             AppState, WatchManager,
         },
         Symphony,
     };
     use axum::{http::StatusCode, Router};
     use http_body_util::BodyExt;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
     use tower::ServiceExt; // For `app.oneshot(...)`
 
     /// Helper to create a fresh in-memory state and attach the principal routes.

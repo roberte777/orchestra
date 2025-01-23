@@ -5,7 +5,7 @@ use orchestra::dto::{HeartbeatDto, HeartbeatNoteDto};
 use orchestra::maestro::{maestro, models::NoteState};
 use orchestra::{CreateNote, CreateSymphony, Note, RestartPolicy, SymphonyWithNotes};
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
