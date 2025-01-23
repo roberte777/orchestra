@@ -1,15 +1,17 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
-    debug_handler,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{sse::KeepAlive, IntoResponse, Response, Sse},
     routing::{get, post},
     Json, Router,
 };
+use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use watcher::{Event, EventType};
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::debug;
+use watcher::{Event, EventType, FieldSelector};
 
 use crate::maestro::{
     models::{Note, NoteState, RestartPolicy, Symphony, SymphonyState},
@@ -44,18 +46,23 @@ pub async fn start_symphony(
             notes_repo.add_note(note).await;
             notes_repo.start_note(&note_name).await;
         }
-    }
-    let mut wm = app_state.watch_manager.lock().await;
-    for note in notes {
-        wm.notify_note(watcher::Event {
+        let mut wm = app_state.watch_manager.lock().await;
+        for note in notes {
+            wm.notify_note(watcher::Event {
+                event_type: watcher::EventType::Added,
+                resource: note,
+            });
+        }
+
+        let symphony = symphony_repo
+            .get_symphony_with_notes(&symphony_name)
+            .await
+            .expect("Symphony must be defined");
+        wm.notify_symphony(watcher::Event {
             event_type: watcher::EventType::Added,
-            resource: note,
+            resource: symphony,
         });
     }
-    wm.notify_symphony(watcher::Event {
-        event_type: watcher::EventType::Added,
-        resource: symphony,
-    });
 }
 
 // Stop a Symphony
@@ -90,6 +97,10 @@ pub async fn stop_symphony(
     symphony_repo.stop_symphony(&name).await;
 
     let mut wm = app_state.watch_manager.lock().await;
+    let symphony = symphony_repo
+        .get_symphony_with_notes(&symphony.name)
+        .await
+        .expect("Symphony should not be able to be missing");
     wm.notify_symphony(watcher::Event {
         event_type: watcher::EventType::Modified,
         resource: symphony,
@@ -99,25 +110,74 @@ pub async fn stop_symphony(
 }
 
 pub async fn get_notes_for_symphony() {}
-#[debug_handler]
-async fn get_all_symphonies(State(state): State<Arc<AppState>>) -> Json<Vec<SymphonyReturn>> {
-    let s_repo = state.symphony_repository.lock().await;
-    let n_repo = state.note_repository.lock().await;
-    let symphonies = s_repo.get_all_symphonies().await;
-    let mut final_symphonies = Vec::new();
-    for symphony in symphonies {
-        let mut notes = Vec::new();
-        for note in symphony.notes {
-            let note = n_repo.get_note(&note).await.unwrap();
-            notes.push(note);
-        }
 
-        final_symphonies.push(SymphonyReturn {
-            name: symphony.name,
-            notes,
-        });
+#[derive(Deserialize)]
+pub struct GetSymphoniesQueryParams {
+    watch: Option<bool>,
+    field_selector: Option<String>,
+}
+pub async fn get_all_symphonies(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GetSymphoniesQueryParams>,
+) -> Response {
+    let s_repo = state.symphony_repository.lock().await;
+    // let n_repo = state.note_repository.lock().await;
+    let symphonies = s_repo.get_all_symphonies_with_notes().await;
+
+    // let mut final_symphonies = Vec::new();
+    // for symphony in symphonies {
+    //     let mut notes = Vec::new();
+    //     for note in symphony.notes {
+    //         let note = n_repo.get_note(&note).await.unwrap();
+    //         notes.push(note);
+    //     }
+    //
+    //     final_symphonies.push(SymphonyReturn {
+    //         name: symphony.name,
+    //         notes,
+    //     });
+    // }
+
+    // Unified response and error handling for non-watching requests
+    if !params.watch.unwrap_or(false) {
+        return Json(symphonies).into_response();
     }
-    Json(final_symphonies)
+
+    // Create the initial SSE event with the list of symphonies to populate the client's cache
+    let initial_event = axum::response::sse::Event::default()
+        .event("list")
+        .data(serde_json::to_string(&symphonies).unwrap_or_else(|_| "[]".to_string()));
+
+    // Watching for updates
+    let field_selector =
+        FieldSelector::from_query(&params.field_selector.unwrap_or("".to_string())); // Customize if needed
+    let receiver = state
+        .watch_manager
+        .lock()
+        .await
+        .subscribe_symphony(field_selector);
+
+    // Stream of update events
+    let update_stream = UnboundedReceiverStream::new(receiver).map(|event| {
+        debug!("Got new event!");
+        let symphony_event = event.as_ref().clone();
+        serde_json::to_string(&symphony_event.resource).map(|data| {
+            axum::response::sse::Event::default()
+                .event(event.event_type.to_string())
+                .data(data)
+        })
+    });
+
+    // Combine the initial event with the update stream
+    let combined_stream = stream::once(async { Ok::<_, _>(initial_event) }).chain(update_stream);
+
+    Sse::new(combined_stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(1))
+                .text("keep-alive"),
+        )
+        .into_response()
 }
 
 #[derive(Serialize)]

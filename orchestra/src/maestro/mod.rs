@@ -1,3 +1,4 @@
+pub mod dto;
 pub mod models;
 pub mod repositories;
 pub mod routes;
@@ -5,6 +6,7 @@ pub mod routes;
 use std::sync::Arc;
 
 use axum::{extract::State, routing::get, Router};
+use dto::SymphonyWithNotes;
 use models::{Note, Principal, SharedStore, SharedStoreExt, Symphony};
 use repositories::{
     note::{InMemoryNoteRepository, NoteRepository},
@@ -70,7 +72,7 @@ pub fn maestro() -> Router {
 
 pub struct WatchManager {
     note_watcher: Watcher<Note>,
-    symphony_watcher: Watcher<Symphony>,
+    symphony_watcher: Watcher<SymphonyWithNotes>,
     principal_watcher: Watcher<Principal>,
 }
 
@@ -87,7 +89,7 @@ impl WatchManager {
         self.note_watcher.notify(event)
     }
 
-    pub fn notify_symphony(&mut self, event: Event<Symphony>) {
+    pub fn notify_symphony(&mut self, event: Event<SymphonyWithNotes>) {
         self.symphony_watcher.notify(event)
     }
 
@@ -105,7 +107,7 @@ impl WatchManager {
     pub fn subscribe_symphony(
         &mut self,
         field_selector: FieldSelector,
-    ) -> UnboundedReceiver<Arc<Event<Symphony>>> {
+    ) -> UnboundedReceiver<Arc<Event<SymphonyWithNotes>>> {
         self.symphony_watcher.subscribe(field_selector)
     }
 

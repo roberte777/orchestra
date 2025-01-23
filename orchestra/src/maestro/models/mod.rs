@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use watcher::Watchable;
 
+use super::dto::SymphonyWithNotes;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub enum PrincipalState {
     Ready,
@@ -60,7 +62,7 @@ impl Watchable for Note {
 // the states a symphony can be in.
 // to it. It moves to terminating while waiting for all notes to be terminated
 // by principals. No new notes can be added
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SymphonyState {
     // A symphony is running as soon as it is in the database and notes can be
     // added to it.
@@ -71,7 +73,7 @@ pub enum SymphonyState {
     Terminating,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Symphony {
     pub name: String,
     pub notes: Vec<String>,
@@ -177,6 +179,24 @@ impl InMemoryStore {
         self.symphonies.get(name).cloned()
     }
 
+    pub fn get_symphony_with_notes(&self, name: &str) -> Option<SymphonyWithNotes> {
+        let symphony = match self.symphonies.get(name).cloned() {
+            Some(s) => s,
+            None => return None,
+        };
+        let mut notes = Vec::new();
+        for note in symphony.notes() {
+            let note = self.get_note(&note).unwrap();
+            notes.push(note);
+        }
+        let final_symphony = SymphonyWithNotes {
+            name: symphony.name.clone(),
+            notes,
+            state: symphony.state.clone(),
+        };
+        Some(final_symphony)
+    }
+
     pub fn get_principal(&self, host: &str) -> Option<Principal> {
         self.principals.get(host).cloned()
     }
@@ -187,6 +207,13 @@ impl InMemoryStore {
 
     pub fn get_all_symphonies(&self) -> Vec<Symphony> {
         self.symphonies.iter().map(|n| n.1.clone()).collect()
+    }
+
+    pub fn get_all_symphonies_with_notes(&self) -> Vec<SymphonyWithNotes> {
+        self.symphonies
+            .iter()
+            .map(|n| self.get_symphony_with_notes(&n.1.name).unwrap())
+            .collect()
     }
 
     pub fn get_all_principals(&self) -> Vec<Principal> {

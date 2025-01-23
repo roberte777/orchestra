@@ -12,6 +12,10 @@ serde = { version = "1.0.217", features = ["derive"] }
 tokio = { version = "1.43.0", features = ["full"] }
 orchestra = { path = "../orchestra" }
 futures = "0.3.31"
+tracing = "0.1.41"
+reqwest-eventsource = "0.6.0"
+serde_json = "1.0.137"
+tracing-subscriber = "0.3.19"
 
 [features]
 frontend = []
