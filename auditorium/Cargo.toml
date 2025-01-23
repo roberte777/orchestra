@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.8.1"
+axum = { version = "0.8.1", features = ["ws"] }
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
-reqwest = {version = "0.12.12", features = ["json"]}
+reqwest = { version = "0.12.12", features = ["json"] }
 serde = { version = "1.0.217", features = ["derive"] }
 tokio = { version = "1.43.0", features = ["full"] }
 orchestra = { path = "../orchestra" }
+futures = "0.3.31"
 
 [features]
 frontend = []
