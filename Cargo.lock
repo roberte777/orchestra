@@ -51,7 +51,6 @@ dependencies = [
  "orchestra",
  "reqwest",
  "serde",
- "serde_json",
  "tokio",
 ]
 
