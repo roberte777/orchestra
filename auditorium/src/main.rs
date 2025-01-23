@@ -13,7 +13,6 @@ use axum::{
     routing::{any, get, post},
     Json, Router,
 };
-use futures::{SinkExt, StreamExt};
 use include_dir::{include_dir, Dir};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -92,7 +91,7 @@ pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<
                     serve_embedded(Path("".to_owned())).await
                 }),
             )
-            .route("/*path", get(|path| async { serve_embedded(Some(path)) }))
+            .route("/{path}", get(|path| async { serve_embedded(path).await }))
     }
 
     let ip: IpAddr = match host {
@@ -110,6 +109,7 @@ pub async fn run_server(maestro_url: String, host: Option<String>, port: Option<
 #[cfg(feature = "frontend")]
 async fn serve_embedded(Path(req_path): Path<String>) -> impl IntoResponse {
     // If path is empty, serve "index.html"
+
     let req_path = if req_path.trim().is_empty() {
         "index.html"
     } else {
@@ -152,9 +152,8 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_websocket(socket, state.symphony_tx.subscribe()))
 }
 
-async fn handle_websocket(socket: WebSocket, mut symphony_rx: Receiver<String>) {
+async fn handle_websocket(mut socket: WebSocket, mut symphony_rx: Receiver<String>) {
     println!("New WebSocket connection");
-    let (mut socket_tx, mut socket_rx) = socket.split();
 
     // Spawn tracked symphony sender task
     tokio::spawn(async move {
@@ -163,7 +162,7 @@ async fn handle_websocket(socket: WebSocket, mut symphony_rx: Receiver<String>) 
             tokio::select! {
                 msg = symphony_rx.recv() => {
                     if let Ok(msg) = msg {
-                        if socket_tx.send(Message::Text(msg.into())).await.is_err() {
+                        if socket.send(Message::Text(msg.into())).await.is_err() {
                             println!("Client disconnected");
                             break;
                         }
@@ -175,19 +174,6 @@ async fn handle_websocket(socket: WebSocket, mut symphony_rx: Receiver<String>) 
             }
         }
     });
-
-    // Handle client status messages
-    // TODO: Clients may not need to send messages, but this is a placeholder for now
-    while let Some(msg) = socket_rx.next().await {
-        match msg {
-            Ok(Message::Close(_)) => break,
-            Err(e) => {
-                println!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
-        }
-    }
 
     println!("WebSocket connection closed");
 }
