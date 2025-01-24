@@ -185,13 +185,15 @@ impl HeartbeatActor {
             let client = Client::new();
             {
                 let notes = state.notes.lock().await;
-                let _ = send_heartbeat_forever_with_tokio_retry(&url, &client, &notes).await;
+                let _ =
+                    send_heartbeat_forever_with_tokio_retry(&url, &client, &notes, child.clone())
+                        .await;
             }
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         let notes = state.notes.lock().await;
-                        let _ = heartbeat_task(&url, &client, &notes).await;
+                        let _ = send_heartbeat_forever_with_tokio_retry(&url, &client, &notes, child.clone()).await;
                     }
                     _ = child.cancelled() => { break }
                 }
@@ -219,6 +221,7 @@ async fn send_heartbeat_forever_with_tokio_retry(
     url: &str,
     client: &Client,
     notes: &HashMap<String, ManagedNote>,
+    cancellation_token: CancellationToken,
 ) -> Result<(), anyhow::Error> {
     // Create an exponential backoff strategy with *no* max attempt limit
     // By default, if you don't call `.take(N)`, it will yield an infinite sequence of delays.
@@ -227,11 +230,15 @@ async fn send_heartbeat_forever_with_tokio_retry(
 
     // Retry::spawn() will keep trying forever until it succeeds
     // or until the future is canceled externally.
-    Retry::spawn(retry_strategy, || async {
-        // If `heartbeat_task` fails, tokio-retry will handle the backoff and retry
-        heartbeat_task(url, client, notes).await
-    })
-    .await
+    tokio::select! {
+    _ = Retry::spawn(retry_strategy, || async {
+            // If `heartbeat_task` fails, tokio-retry will handle the backoff and retry
+            heartbeat_task(url, client, notes).await
+        }) => {
+            Ok(())
+        }
+    _ = cancellation_token.cancelled() => {Ok(())}
+    }
 }
 async fn heartbeat_task(
     url: &str,
@@ -250,12 +257,7 @@ async fn heartbeat_task(
         name: "me".to_string(),
         notes,
     };
-    let response = client
-        .post(url)
-        .json(&heartbeat)
-        // .header("Content-Type", "application/json")
-        .send()
-        .await?;
+    let response = client.post(url).json(&heartbeat).send().await?;
     debug!("Heartbeat response: {:?}", response);
     Ok(())
 }
