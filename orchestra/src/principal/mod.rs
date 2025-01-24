@@ -8,13 +8,16 @@ use config::PrincipalConfig;
 use note_process::{start_note, stop_note, synchronize_state, ManagedNote};
 use process_exits_actor::ProcessExitsActor;
 use reqwest::Client;
-use reqwest_eventsource::EventSource;
+use reqwest_eventsource::{Event, EventSource};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tokio_stream::StreamExt;
 
 use tokio::{
-    sync::{mpsc::unbounded_channel, Mutex},
+    sync::{
+        mpsc::{unbounded_channel, UnboundedSender},
+        Mutex,
+    },
     task::JoinHandle,
     time::{self},
 };
@@ -46,7 +49,7 @@ pub async fn run_principal(args: PrincipalArgs) -> anyhow::Result<()> {
     let config = std::fs::read_to_string(config_path)?;
     let config: PrincipalConfig = serde_json::from_str(&config)?;
 
-    let mut state = AppState::default();
+    let state = AppState::default();
     let (process_exit_tx, process_exit_rx) = unbounded_channel();
 
     let mut process_exits_actor = ProcessExitsActor::new();
@@ -65,75 +68,8 @@ pub async fn run_principal(args: PrincipalArgs) -> anyhow::Result<()> {
         "{}/api/v1/notes?watch=true&field_selector=host=me",
         config.maestro_server_address
     );
-    tokio::spawn(async move {
-        println!("Subscribing to SSE from: {}", sse_url);
 
-        let mut es = EventSource::get(sse_url);
-
-        // We'll wrap our SSE loop in a `tokio::select!` to allow early exit on Ctrl-C.
-        tokio::select! {
-            // SSE subscription loop
-            _ = async {
-                while let Some(item) = es.next().await {
-                    match item {
-                        Ok(reqwest_eventsource::Event::Open) => info!("Connection Opened!"),
-                        Ok(reqwest_eventsource::Event::Message(message)) => match message.event.as_str() {
-                            "list" => {
-                                debug!(notes = message.data, "Got list event");
-                                // data is a list of notes
-                                let notes: Vec<Note> = serde_json::from_str(&message.data)
-                                    .expect("Should have received valid list of notes");
-                                synchronize_state(&mut state, notes, process_exit_tx.clone()).await;
-                            }
-                            "added" => {
-                                debug!("Got added event");
-                                let new_note = serde_json::from_str(&message.data)
-                                    .expect("Should receive valid note from added event");
-                                let mut current_notes = state.notes.lock().await;
-                                start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
-                            }
-                            "modified" => {
-                                debug!("Got modified event");
-                                let new_note: Note = serde_json::from_str(&message.data)
-                                    .expect("Should receive valid note from modified event");
-                                let mut current_notes = state.notes.lock().await;
-                                if current_notes.get(&new_note.name).is_some() {
-                                    // if the desired state is stop, stop process
-                                    // if running and set state to terminated
-                                    if matches!(new_note.state, NoteState::Terminating)
-                                    {
-                                        stop_note(&mut current_notes, &new_note.name).await;
-                                    }
-                                } else {
-                                    warn!("Got modified event for untracked note");
-                                }
-                            }
-                            "deleted" => {
-                                debug!("Got deleted event");
-                                let new_note: Note = serde_json::from_str(&message.data)
-                                    .expect("Deleted event should give valid note");
-                                let mut current_notes = state.notes.lock().await;
-                                if current_notes.get(&new_note.name).is_some() {
-                                    stop_note(&mut current_notes, &new_note.name).await;
-                                }
-                                current_notes.remove(&new_note.name);
-                            }
-                            _ => {
-                                warn!("Unexpected message: {:#?}", message);
-                            }
-                        },
-                        Err(err) => {
-                            es.close();
-                            panic!("Event source error: {:#?}", err)
-                        }
-                    }
-                }
-            } => {},
-            _ = ct_child.cancelled() => {
-                info!("Exiting SSE Task");
-            }
-        }
-    });
+    start_sse_subscriber(sse_url, state, process_exit_tx, ct_child);
 
     _ = tokio::signal::ctrl_c().await;
     info!("Received Ctrl-C signal, initiating shutdown.");
@@ -153,6 +89,156 @@ pub async fn run_principal(args: PrincipalArgs) -> anyhow::Result<()> {
 
     println!("Clean shutdown complete.");
     Ok(())
+}
+
+/// Spawns a task to continuously connect to the SSE endpoint, read events, and retry on failure.
+/// Cancels cleanly if the provided `cancellation_token` is triggered.
+pub fn start_sse_subscriber(
+    sse_url: String,
+    state: AppState,
+    process_exit_tx: UnboundedSender<(String, i32)>,
+    cancellation_token: CancellationToken,
+) {
+    // Spawn the SSE subscription on its own task
+    tokio::spawn(async move {
+        info!("Starting SSE subscriber for URL: {}", sse_url);
+
+        // An infinite loop that will keep trying to connect to the SSE endpoint
+        // until cancellation is requested.
+        let retry_strategy =
+            ExponentialBackoff::from_millis(500).max_delay(Duration::from_secs(30));
+
+        loop {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    info!("SSE subscriber received cancellation signal, exiting.");
+                    break;
+                }
+                result = Retry::spawn(retry_strategy.clone(), || {
+                    // Our SSE connection attempt
+                    async {
+                        let child_token = cancellation_token.child_token();
+                        connect_and_stream_sse(
+                            &sse_url,
+                            state.clone(),
+                            process_exit_tx.clone(),
+                            child_token,
+                        )
+                        .await
+                    }
+                }) => {
+                    match result {
+                        Ok(()) => {
+                            // If connect_and_stream_sse returned Ok, that means
+                            // it exited gracefully (likely a normal shutdown).
+                            info!("SSE connection ended gracefully. Will not reconnect.");
+                            break;
+                        }
+                        Err(e) => {
+                            // If connect_and_stream_sse returned an error, we let
+                            // tokio-retry handle the exponential backoff and then retry.
+                            warn!("SSE connection failed: {}. Will retry...", e);
+                            // The loop continues, which triggers Retry::spawn again
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("SSE subscriber task has fully exited.");
+    });
+}
+
+/// Connects to the SSE endpoint, processes events until an error occurs or cancellation is requested.
+/// If an error is returned, it allows the caller (the retry loop) to back off and retry.
+async fn connect_and_stream_sse(
+    sse_url: &str,
+    state: AppState,
+    process_exit_tx: UnboundedSender<(String, i32)>,
+    cancellation_token: CancellationToken,
+) -> Result<()> {
+    // Create the EventSource.
+    // If the server is unreachable or returns an error upon initial connection,
+    // EventSource::get(...) will succeed, but reading from `es.next()` might fail immediately.
+    let mut es = EventSource::get(sse_url);
+
+    info!("Connected to SSE endpoint: {}", sse_url);
+
+    loop {
+        tokio::select! {
+            maybe_event = es.next() => {
+                match maybe_event {
+                    Some(Ok(Event::Open)) => {
+                        debug!("SSE connection opened.");
+                    }
+                    Some(Ok(Event::Message(message))) => {
+                        match message.event.as_str() {
+                            "list" => {
+                                debug!(notes = message.data, "Got list event");
+                                let notes: Vec<Note> = serde_json::from_str(&message.data)
+                                    .map_err(|e| anyhow!("Failed to parse 'list': {}", e))?;
+                                synchronize_state(&mut state.clone(), notes, process_exit_tx.clone()).await;
+                            }
+                            "added" => {
+                                debug!("Got added event");
+                                let new_note: Note = serde_json::from_str(&message.data)
+                                    .map_err(|e| anyhow!("Failed to parse 'added': {}", e))?;
+                                let mut current_notes = state.notes.lock().await;
+                                start_note(&mut current_notes, new_note, process_exit_tx.clone()).await;
+                            }
+                            "modified" => {
+                                debug!("Got modified event");
+                                let new_note: Note = serde_json::from_str(&message.data)
+                                    .map_err(|e| anyhow!("Failed to parse 'modified': {}", e))?;
+                                let mut current_notes = state.notes.lock().await;
+                                if current_notes.get(&new_note.name).is_some() {
+                                    if matches!(new_note.state, NoteState::Terminating) {
+                                        stop_note(&mut current_notes, &new_note.name).await;
+                                    }
+                                } else {
+                                    warn!("Got 'modified' event for untracked note: {}", new_note.name);
+                                }
+                            }
+                            "deleted" => {
+                                debug!("Got deleted event");
+                                let deleted_note: Note = serde_json::from_str(&message.data)
+                                    .map_err(|e| anyhow!("Failed to parse 'deleted': {}", e))?;
+                                let mut current_notes = state.notes.lock().await;
+                                if current_notes.get(&deleted_note.name).is_some() {
+                                    stop_note(&mut current_notes, &deleted_note.name).await;
+                                }
+                                current_notes.remove(&deleted_note.name);
+                            }
+                            _ => {
+                                warn!("Unexpected SSE message event: {:#?}", message);
+                            }
+                        }
+                    }
+                    Some(Err(err)) => {
+                        // We got an error from the SSE stream. This will break
+                        // and return an error to the retry logic.
+                        warn!("SSE stream error: {}. Closing and retrying...", err);
+                        es.close();
+                        return Err(anyhow!("SSE stream error: {}", err));
+                    }
+                    None => {
+                        // The stream ended normally (the server closed the connection).
+                        // Return an error so that we can attempt reconnect, or interpret
+                        // as a graceful end if you prefer. Returning an error will cause
+                        // the retry strategy to engage.
+                        warn!("SSE stream ended. Will attempt to reconnect.");
+                        es.close();
+                        return Err(anyhow!("SSE stream ended by remote server"));
+                    }
+                }
+            }
+            _ = cancellation_token.cancelled() => {
+                info!("Cancellation token triggered for SSE connection. Closing stream.");
+                es.close();
+                return Ok(());
+            }
+        }
+    }
 }
 
 struct HeartbeatTaskState {
