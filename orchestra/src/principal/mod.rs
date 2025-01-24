@@ -19,7 +19,7 @@ use tokio::{
         Mutex,
     },
     task::JoinHandle,
-    time::{self},
+    time::{self, Interval},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -34,6 +34,7 @@ pub struct AppState {
     pub notes: Arc<Mutex<HashMap<String, ManagedNote>>>,
 }
 
+/// Main entrypoint for the "principal".
 pub async fn run_principal(args: PrincipalArgs) -> anyhow::Result<()> {
     if !args.config.exists() {
         return Err(anyhow!(
@@ -46,122 +47,148 @@ pub async fn run_principal(args: PrincipalArgs) -> anyhow::Result<()> {
     } else {
         args.config
     };
-    let config = std::fs::read_to_string(config_path)?;
-    let config: PrincipalConfig = serde_json::from_str(&config)?;
 
+    let config_data = std::fs::read_to_string(config_path)?;
+    let config: PrincipalConfig = serde_json::from_str(&config_data)?;
+
+    // Shared application state.
     let state = AppState::default();
-    let (process_exit_tx, process_exit_rx) = unbounded_channel();
 
+    // Process exit channel + actor
+    let (process_exit_tx, process_exit_rx) = unbounded_channel();
     let mut process_exits_actor = ProcessExitsActor::new();
     process_exits_actor.start(state.clone(), process_exit_tx.clone(), process_exit_rx);
 
-    let mut hb_actor = HeartbeatActor::new(
-        format!("{}/api/v1/principals", config.maestro_server_address),
-        Duration::from_millis(config.heartbeat_interval_ms),
-    );
-    hb_actor.start(state.clone());
-    let ct = CancellationToken::new();
-    let ct_child = ct.child_token();
-
-    // Replace with your target host
+    // SSE actor for note watch
     let sse_url = format!(
         "{}/api/v1/notes?watch=true&field_selector=host=me",
         config.maestro_server_address
     );
+    let mut sse_actor = SSEActor::new(sse_url, process_exit_tx.clone());
 
-    start_sse_subscriber(sse_url, state, process_exit_tx, ct_child);
+    // Heartbeat actor
+    let hb_url = format!("{}/api/v1/principals", config.maestro_server_address);
+    let mut hb_actor =
+        HeartbeatActor::new(hb_url, Duration::from_millis(config.heartbeat_interval_ms));
 
-    _ = tokio::signal::ctrl_c().await;
-    info!("Received Ctrl-C signal, initiating shutdown.");
-    ct.cancel();
+    // Start both actors
+    sse_actor.start(state.clone());
+    hb_actor.start(state.clone());
 
-    // Either the SSE stream ended or we caught Ctrl-C.
-    // Proceed with your shutdown logic.
+    // Wait for Ctrl-C
+    info!("All actors started. Press Ctrl-C to shut down.");
+    tokio::signal::ctrl_c().await?;
+    info!("Ctrl-C received, initiating shutdown...");
 
-    println!("Disconnecting from SSE endpoint.");
-    println!("Stopping heartbeats");
+    // Stop the SSE actor
+    sse_actor.stop().await;
+    info!("SSE actor stopped.");
+
+    // Stop the Heartbeat actor
     hb_actor.stop().await;
+    info!("Heartbeat actor stopped.");
 
-    // Stop the process-exits actor last, or after you kill any processes
-    // you *haven't* already killed.
-    println!("Stopping process exits actor");
+    // Stop the process-exits actor last
     process_exits_actor.stop().await;
+    info!("Process exits actor stopped.");
 
-    println!("Clean shutdown complete.");
+    info!("Clean shutdown complete.");
     Ok(())
 }
 
-/// Spawns a task to continuously connect to the SSE endpoint, read events, and retry on failure.
-/// Cancels cleanly if the provided `cancellation_token` is triggered.
-pub fn start_sse_subscriber(
-    sse_url: String,
-    state: AppState,
+/* --------------------------------------------------------------------------
+SSEActor
+-------------------------------------------------------------------------- */
+
+/// An actor responsible for listening to the SSE stream of notes and
+/// applying changes to the local state (start/stop processes, etc.).
+pub struct SSEActor {
+    /// SSE endpoint URL
+    url: String,
+    /// Handle to the spawned task
+    handle: Option<JoinHandle<()>>,
+    /// Cancellation token to shut down the SSE
+    cancel_token: CancellationToken,
+    /// MPSC channel for notifying about process exits
     process_exit_tx: UnboundedSender<(String, i32)>,
-    cancellation_token: CancellationToken,
-) {
-    // Spawn the SSE subscription on its own task
-    tokio::spawn(async move {
-        info!("Starting SSE subscriber for URL: {}", sse_url);
+}
 
-        // An infinite loop that will keep trying to connect to the SSE endpoint
-        // until cancellation is requested.
-        let retry_strategy =
-            ExponentialBackoff::from_millis(500).max_delay(Duration::from_secs(30));
+impl SSEActor {
+    pub fn new(url: String, process_exit_tx: UnboundedSender<(String, i32)>) -> Self {
+        Self {
+            url,
+            handle: None,
+            cancel_token: CancellationToken::new(),
+            process_exit_tx,
+        }
+    }
 
-        loop {
-            tokio::select! {
-                _ = cancellation_token.cancelled() => {
-                    info!("SSE subscriber received cancellation signal, exiting.");
-                    break;
-                }
-                result = Retry::spawn(retry_strategy.clone(), || {
-                    // Our SSE connection attempt
-                    async {
-                        let child_token = cancellation_token.child_token();
-                        connect_and_stream_sse(
-                            &sse_url,
-                            state.clone(),
-                            process_exit_tx.clone(),
-                            child_token,
-                        )
-                        .await
+    /// Start the SSE actor. Spawns a task that keeps connecting to the SSE endpoint
+    /// with exponential backoff, until cancellation is requested.
+    pub fn start(&mut self, state: AppState) {
+        let url = self.url.clone();
+        let process_exit_tx = self.process_exit_tx.clone();
+        let cancel_child = self.cancel_token.child_token();
+
+        let handle = tokio::spawn(async move {
+            info!("SSEActor started. Connecting to SSE at: {}", url);
+
+            let retry_strategy =
+                ExponentialBackoff::from_millis(500).max_delay(Duration::from_secs(30));
+
+            // Outer loop for indefinite retry until canceled
+            loop {
+                let result = Retry::spawn(retry_strategy.clone(), || {
+                    let child = cancel_child.child_token();
+                    connect_and_stream_sse(&url, state.clone(), process_exit_tx.clone(), child)
+                })
+                .await;
+
+                tokio::select! {
+                    _ = cancel_child.cancelled() => {
+                        info!("SSEActor canceled, exiting retry loop.");
+                        break;
                     }
-                }) => {
-                    match result {
-                        Ok(()) => {
-                            // If connect_and_stream_sse returned Ok, that means
-                            // it exited gracefully (likely a normal shutdown).
-                            info!("SSE connection ended gracefully. Will not reconnect.");
-                            break;
-                        }
-                        Err(e) => {
-                            // If connect_and_stream_sse returned an error, we let
-                            // tokio-retry handle the exponential backoff and then retry.
-                            warn!("SSE connection failed: {}. Will retry...", e);
-                            // The loop continues, which triggers Retry::spawn again
+                    else => {
+                        match result {
+                            Ok(()) => {
+                                info!("SSE connection ended gracefully, not retrying.");
+                                break;
+                            }
+                            Err(e) => {
+                                warn!("SSE connection failed after retries: {}. Will attempt again.", e);
+                                // The loop will continue, re-attempting connection unless canceled
+                            }
                         }
                     }
                 }
             }
-        }
 
-        info!("SSE subscriber task has fully exited.");
-    });
+            info!("SSEActor main loop done.");
+        });
+
+        self.handle = Some(handle);
+    }
+
+    pub async fn stop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            info!("Stopping SSEActor...");
+            self.cancel_token.cancel();
+            // Wait for the task to finish.
+            let _ = handle.await;
+        }
+    }
 }
 
 /// Connects to the SSE endpoint, processes events until an error occurs or cancellation is requested.
-/// If an error is returned, it allows the caller (the retry loop) to back off and retry.
+/// If an error is returned, it allows the caller (the retry logic) to handle backoff and retry.
 async fn connect_and_stream_sse(
     sse_url: &str,
     state: AppState,
     process_exit_tx: UnboundedSender<(String, i32)>,
     cancellation_token: CancellationToken,
 ) -> Result<()> {
-    // Create the EventSource.
-    // If the server is unreachable or returns an error upon initial connection,
-    // EventSource::get(...) will succeed, but reading from `es.next()` might fail immediately.
     let mut es = EventSource::get(sse_url);
-
     info!("Connected to SSE endpoint: {}", sse_url);
 
     loop {
@@ -215,25 +242,19 @@ async fn connect_and_stream_sse(
                         }
                     }
                     Some(Err(err)) => {
-                        // We got an error from the SSE stream. This will break
-                        // and return an error to the retry logic.
-                        warn!("SSE stream error: {}. Closing and retrying...", err);
+                        warn!("SSE stream error: {}. Closing and returning error...", err);
                         es.close();
                         return Err(anyhow!("SSE stream error: {}", err));
                     }
                     None => {
-                        // The stream ended normally (the server closed the connection).
-                        // Return an error so that we can attempt reconnect, or interpret
-                        // as a graceful end if you prefer. Returning an error will cause
-                        // the retry strategy to engage.
-                        warn!("SSE stream ended. Will attempt to reconnect.");
+                        warn!("SSE stream ended by server. Closing and returning error...");
                         es.close();
                         return Err(anyhow!("SSE stream ended by remote server"));
                     }
                 }
             }
             _ = cancellation_token.cancelled() => {
-                info!("Cancellation token triggered for SSE connection. Closing stream.");
+                info!("SSEActor received cancellation; closing SSE stream.");
                 es.close();
                 return Ok(());
             }
@@ -241,109 +262,122 @@ async fn connect_and_stream_sse(
     }
 }
 
-struct HeartbeatTaskState {
-    task: JoinHandle<()>,
-    cancellation_token: CancellationToken,
-}
+/* --------------------------------------------------------------------------
+HeartbeatActor
+-------------------------------------------------------------------------- */
 
 pub struct HeartbeatActor {
     url: String,
-    heartbat_state: Option<HeartbeatTaskState>,
     heartbeat_interval: Duration,
+    task_state: Option<HeartbeatTaskState>,
+}
+
+struct HeartbeatTaskState {
+    task: JoinHandle<()>,
+    cancellation_token: CancellationToken,
 }
 
 impl HeartbeatActor {
     pub fn new(url: String, heartbeat_interval: Duration) -> Self {
         Self {
             url,
-            heartbat_state: None,
             heartbeat_interval,
+            task_state: None,
         }
     }
 
     pub fn start(&mut self, state: AppState) {
-        let mut interval = time::interval(self.heartbeat_interval);
-        let cancel = CancellationToken::new();
-        let child = cancel.child_token();
+        let cancel_token = CancellationToken::new();
+        let child_token = cancel_token.child_token();
         let url = self.url.clone();
+        let interval = time::interval(self.heartbeat_interval);
 
-        let jh = tokio::spawn(async move {
-            let client = Client::new();
-            {
-                let notes = state.notes.lock().await;
-                let _ =
-                    send_heartbeat_forever_with_tokio_retry(&url, &client, &notes, child.clone())
-                        .await;
-            }
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let notes = state.notes.lock().await;
-                        let _ = send_heartbeat_forever_with_tokio_retry(&url, &client, &notes, child.clone()).await;
-                    }
-                    _ = child.cancelled() => { break }
-                }
-            }
-            info!("Exiting heartbeat task");
+        let task = tokio::spawn(async move {
+            run_heartbeat_loop(&url, interval, state, child_token).await;
         });
 
-        let heartbeat_state = HeartbeatTaskState {
-            task: jh,
-            cancellation_token: cancel,
-        };
-
-        self.heartbat_state = Some(heartbeat_state);
+        self.task_state = Some(HeartbeatTaskState {
+            task,
+            cancellation_token: cancel_token,
+        });
     }
 
     pub async fn stop(&mut self) {
-        if let Some(hb_state) = self.heartbat_state.take() {
-            hb_state.cancellation_token.cancel();
-            _ = hb_state.task.await;
+        if let Some(task_state) = self.task_state.take() {
+            info!("Stopping HeartbeatActor...");
+            task_state.cancellation_token.cancel();
+            let _ = task_state.task.await;
         }
     }
 }
 
-async fn send_heartbeat_forever_with_tokio_retry(
+/// The main heartbeat loop: runs until cancelled.
+async fn run_heartbeat_loop(
+    url: &str,
+    mut interval: Interval,
+    state: AppState,
+    cancellation_token: CancellationToken,
+) {
+    let client = Client::new();
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let notes = state.notes.lock().await;
+                let _ = send_heartbeat_with_retries(url, &client, &notes, cancellation_token.child_token()).await;
+            }
+            _ = cancellation_token.cancelled() => {
+                info!("HeartbeatActor cancelled.");
+                break;
+            }
+        }
+    }
+    info!("HeartbeatActor loop ended.");
+}
+
+/// Sends one heartbeat, retrying until it succeeds or we get cancelled.
+async fn send_heartbeat_with_retries(
     url: &str,
     client: &Client,
     notes: &HashMap<String, ManagedNote>,
     cancellation_token: CancellationToken,
-) -> Result<(), anyhow::Error> {
-    // Create an exponential backoff strategy with *no* max attempt limit
-    // By default, if you don't call `.take(N)`, it will yield an infinite sequence of delays.
-    let retry_strategy =
-        ExponentialBackoff::from_millis(500).max_delay(std::time::Duration::from_secs(30)); // could be any max delay
+) -> Result<()> {
+    let retry_strategy = ExponentialBackoff::from_millis(500).max_delay(Duration::from_secs(30));
 
-    // Retry::spawn() will keep trying forever until it succeeds
-    // or until the future is canceled externally.
     tokio::select! {
-    _ = Retry::spawn(retry_strategy, || async {
-            // If `heartbeat_task` fails, tokio-retry will handle the backoff and retry
-            heartbeat_task(url, client, notes).await
+        result = Retry::spawn(retry_strategy, || async {
+            send_heartbeat_once(url, client, notes).await
         }) => {
+            result.map_err(|e| anyhow!("Heartbeat retries failed: {e}"))
+        }
+        _ = cancellation_token.cancelled() => {
+            debug!("Heartbeat send cancelled.");
             Ok(())
         }
-    _ = cancellation_token.cancelled() => {Ok(())}
     }
 }
-async fn heartbeat_task(
+
+/// Sends a single heartbeat without internal retry logic.
+async fn send_heartbeat_once(
     url: &str,
     client: &Client,
     notes: &HashMap<String, ManagedNote>,
 ) -> Result<()> {
-    let notes = notes
+    let notes_dto = notes
         .iter()
-        .map(|n| HeartbeatNoteDto {
-            symphony: n.1.note.symphony.clone(),
-            name: n.1.note.name.clone(),
-            state: n.1.note.state.clone(),
+        .map(|(_name, managed)| HeartbeatNoteDto {
+            symphony: managed.note.symphony.clone(),
+            name: managed.note.name.clone(),
+            state: managed.note.state.clone(),
         })
         .collect();
+
     let heartbeat = HeartbeatDto {
         name: "me".to_string(),
-        notes,
+        notes: notes_dto,
     };
+
     let response = client.post(url).json(&heartbeat).send().await?;
-    debug!("Heartbeat response: {:?}", response);
+    debug!("Heartbeat response: {:?}", response.status());
     Ok(())
 }
