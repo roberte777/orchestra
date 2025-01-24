@@ -10,6 +10,7 @@ use process_exits_actor::ProcessExitsActor;
 use reqwest::Client;
 use reqwest_eventsource::EventSource;
 use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tokio_stream::StreamExt;
 
 use tokio::{
@@ -180,19 +181,17 @@ impl HeartbeatActor {
         let child = cancel.child_token();
         let url = self.url.clone();
 
-        // TODO: Try heartbeat first to see if the url can be reached
-
         let jh = tokio::spawn(async move {
             let client = Client::new();
+            {
+                let notes = state.notes.lock().await;
+                let _ = send_heartbeat_forever_with_tokio_retry(&url, &client, &notes).await;
+            }
             loop {
-                //TODO: Take some sort of action if heartbeat fails.
-                {
-                    let notes = state.notes.lock().await;
-                    let _ = heartbeat_task(&url, &client, &notes).await;
-                }
                 tokio::select! {
                     _ = interval.tick() => {
-                        // continue to next iteration
+                        let notes = state.notes.lock().await;
+                        let _ = heartbeat_task(&url, &client, &notes).await;
                     }
                     _ = child.cancelled() => { break }
                 }
@@ -214,6 +213,25 @@ impl HeartbeatActor {
             _ = hb_state.task.await;
         }
     }
+}
+
+async fn send_heartbeat_forever_with_tokio_retry(
+    url: &str,
+    client: &Client,
+    notes: &HashMap<String, ManagedNote>,
+) -> Result<(), anyhow::Error> {
+    // Create an exponential backoff strategy with *no* max attempt limit
+    // By default, if you don't call `.take(N)`, it will yield an infinite sequence of delays.
+    let retry_strategy =
+        ExponentialBackoff::from_millis(500).max_delay(std::time::Duration::from_secs(30)); // could be any max delay
+
+    // Retry::spawn() will keep trying forever until it succeeds
+    // or until the future is canceled externally.
+    Retry::spawn(retry_strategy, || async {
+        // If `heartbeat_task` fails, tokio-retry will handle the backoff and retry
+        heartbeat_task(url, client, notes).await
+    })
+    .await
 }
 async fn heartbeat_task(
     url: &str,
